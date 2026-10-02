@@ -1,0 +1,6 @@
+{
+  "name": "Steel Titans: WRC",
+  "description": "3D Robot Boxing Game dengan fisika pertarungan intens dan arena spektakuler.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

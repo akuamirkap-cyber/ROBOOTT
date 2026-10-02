@@ -1,10 +1,10 @@
-import { useEffect, useState, type MouseEvent, type ReactNode } from 'react';
-import { OPPONENTS, PLAYER_NAME, ULTRA_COLOR, smartDef, ultraDef, type OpponentDef } from '../game/Game';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
+import { OPPONENTS, PLAYER_NAME, ULTRA_COLOR, smartDef, ultraDef, type Game, type HudState, type OpponentDef } from '../game/Game';
 import type { SfxProfile } from '../game/audio';
 import { Emblem, Key, cssVar } from './Emblem';
-import { DifficultyPicker, FootworkPicker, IqPicker, SectionTitle, SfxPicker } from './Pickers';
+import { DifficultyPicker, FootworkPicker, IqPicker, SfxPicker } from './Pickers';
 
-type Panel = 'main' | 'settings' | 'controls';
+export type MenuTab = 'arena' | 'titan' | 'controls' | 'settings';
 
 export interface MenuProps {
   unlocked: number;
@@ -19,9 +19,10 @@ export interface MenuProps {
   onFw: (m: number) => void;
   iq: number;
   onIq: (n: number) => void;
+  game?: Game | null;
+  hud?: HudState | null;
 }
 
-/** buttons drop their focus after a click, so Enter / Space never re-triggers them by accident */
 const act = (fn: () => void) => (e: MouseEvent<HTMLButtonElement>) => {
   e.currentTarget.blur();
   fn();
@@ -43,156 +44,99 @@ function statsOf(d: OpponentDef) {
 
 const THREAT = ['', 'RENDAH', 'SEDANG', 'TINGGI', 'EKSTREM', 'MAUT'];
 const STYLE_DESC = [
-  'Lambat dan kasar. Mudah dibaca — sparring ideal untuk menguasai dasar.',
-  'Agresif dan lincah. Sering memotong jarak dan menghindar dengan sidestep.',
-  'Berat dan bertenaga. Waspadai Overdrive banting yang menghancurkan jarak dekat.',
-  'Sang juara dunia. Membaca pola seranganmu, menghindar, lalu membalas tanpa ampun.',
+  'Lambat dan kasar. Serangannya mudah dibaca — sparring ideal untuk menguasai kombo dasar dan timed dodge.',
+  'Agresif dan lincah. Sering memotong jarak dan menghindar ke samping. Balas dengan hook lebar saat ia sidestep.',
+  'Raksasa bertenaga petir. Memiliki armor tebal dan Overdrive banting penghancur. Jaga jarak dan manfaatkan counter.',
+  'Sang juara dunia tak terkalahkan. Membaca pola serangan spammed, menghindar refleks sempurna, dan membalas tanpa ampun.',
 ];
 
 const CONTROLS: { title: string; rows: [string[], string][] }[] = [
   {
-    title: 'GERAK',
+    title: 'GERAK & FOOTWORK',
     rows: [
       [['W', 'A', 'S', 'D'], 'Maju · mundur · mengitari lawan'],
-      [['SHIFT', '+', 'WASD'], 'Lari / sprint'],
-      [['WASD', '×2'], 'Dash / sidestep'],
+      [['SHIFT', '+', 'WASD'], 'Sprint lari kencang'],
+      [['WASD', '×2'], 'Sidestep / dash cepat menghindari pukulan lurus'],
     ],
   },
   {
-    title: 'SERANG',
+    title: 'SERANGAN DASAR',
     rows: [
-      [['J'], 'Jab cepat'],
-      [['K'], 'Cross keras'],
-      [['U'], 'Hook samping'],
-      [['I'], 'Uppercut (melempar ke udara)'],
-      [['L'], 'Grab — menembus blok'],
-      [['LARI', '+', 'J K U I'], 'Running punch'],
+      [['J'], 'Jab cepat pembuka serangan'],
+      [['K'], 'Cross lurus bertenaga'],
+      [['U'], 'Hook samping melengkung'],
+      [['I'], 'Uppercut (melempar lawan ke udara)'],
+      [['L'], 'Grab bantingan — menembus blok turtle lawan'],
+      [['LARI', '+', 'J K U I'], 'Running strike berdaya dorong dahsyat'],
     ],
   },
   {
-    title: 'BERTAHAN',
+    title: 'BERTAHAN & COUNTER',
     rows: [
-      [['SPACE'], 'Tahan untuk blok'],
-      [['Q'], 'DODGE — tekan saat ◎ indikator muncul di musuh = serangannya meleset'],
+      [['SPACE'], 'Tahan blok peredam benturan'],
+      [['Q'], 'TIMED DODGE — tekan saat indikator ◎ muncul di musuh untuk menghindar sempurna & dapat counter!'],
     ],
   },
   {
-    title: 'GAYA IPPO — MENDEKAT',
+    title: 'GAYA IPPO — DEMPSEY ROLL',
     rows: [
-      [['E'], 'PEEK-A-BOO (tahan): mendekat sendiri sambil goyang badan'],
-      [['E', '+', 'J K U I'], 'DEMPSEY ROLL: makin lama goyang, makin dahsyat'],
+      [['E'], 'PEEK-A-BOO (tahan): goyang kepala angka 8, slip otomatis dari jab & cross sambil mendekat'],
+      [['E', '+', 'J K U I'], 'DEMPSEY SMASH: makin lama menenun goyangan, pukulan makin mematikan!'],
     ],
   },
   {
-    title: 'SPESIAL',
+    title: 'TEKNIK JUARA',
     rows: [
-      [['M'], 'TAUNT — tepuk dada, pamer ke lawan (isi Overdrive, tapi kamu terbuka)'],
-      [['N'], 'TAUNT JUARA — angkat kedua tangan & menengadah sombong ala Zeus'],
-      [['R'], 'Overdrive (meter penuh)'],
-      [['[', ']'], 'Kecepatan footwork'],
-      [['ESC'], 'Pause'],
+      [['M'], 'Taunt tepuk dada (isi Overdrive, tapi terbuka diserang)'],
+      [['N'], 'Taunt Zeus sang juara (angkat kedua lengan sombong)'],
+      [['R'], 'OVERDRIVE FINISHER saat meter 100% penuh'],
+      [['[', ']'], 'Ubah kecepatan footwork secara instan'],
+      [['ESC'], 'Jeda pertandingan / Pause'],
     ],
   },
 ];
 
-function OpponentCard({ def, index, ultra }: { def: OpponentDef; index: number; ultra: boolean }) {
+export function Menu({
+  unlocked,
+  sel,
+  onSel,
+  onStart,
+  sfx,
+  onSfx,
+  ultra,
+  onUltra,
+  fw,
+  onFw,
+  iq,
+  onIq,
+  game,
+  hud,
+}: MenuProps) {
+  const [tab, setTab] = useState<MenuTab>('arena');
+  const [heroPose, setHeroPoseState] = useState<'stand' | 'guard' | 'victory' | 'taunt'>('stand');
+  const [camMode, setCamModeState] = useState<'hero' | 'arena'>('hero');
+  const dragRef = useRef({ dragging: false, startX: 0, moved: false });
+
+  const def = smartDef(ultra ? ultraDef(OPPONENTS[sel]) : OPPONENTS[sel], iq);
   const col = ultra ? ULTRA_COLOR : def.color;
   const { bars, threat } = statsOf(def);
   const skulls = Math.max(1, Math.round(threat * 5));
-  return (
-    <div className="card-cut glass relative overflow-hidden p-5" style={cssVar('--c', col)}>
-      <div className="pointer-events-none absolute -right-2 -top-6 font-display text-[130px] leading-none opacity-[0.07]" style={{ color: col }}>
-        {String(index + 1).padStart(2, '0')}
-      </div>
-      <div className="relative flex items-center justify-between">
-        <span className="font-tech text-[10px] tracking-[0.35em] text-white/55">LAWAN {String(index + 1).padStart(2, '0')}</span>
-        {ultra && (
-          <span className="ultra-badge border px-2 py-0.5 font-tech text-[10px] tracking-[0.25em]" style={{ borderColor: ULTRA_COLOR, color: ULTRA_COLOR }}>
-            ☠ ULTRA
-          </span>
-        )}
-      </div>
-      <div className="relative mt-1 font-display text-[44px] leading-[0.95]" style={{ color: col, textShadow: `0 0 28px ${col}88` }}>
-        {def.name}
-      </div>
-      <div className="relative mt-1 text-[12px] italic text-white/65">{def.title}</div>
 
-      <div className="relative mt-4 flex items-center gap-2">
-        <span className="font-tech text-[10px] tracking-[0.3em] text-white/50">ANCAMAN</span>
-        <span className="flex gap-1 text-sm">
-          {[0, 1, 2, 3, 4].map((s) => (
-            <span key={s} style={{ opacity: s < skulls ? 1 : 0.18, color: col }}>
-              ☠
-            </span>
-          ))}
-        </span>
-        <span className="font-tech text-[10px] font-bold tracking-[0.2em]" style={{ color: col }}>
-          {THREAT[skulls]}
-        </span>
-      </div>
+  // Sync state from HUD if available
+  useEffect(() => {
+    if (hud?.heroPose) setHeroPoseState(hud.heroPose);
+    if (hud?.menuCamMode) setCamModeState(hud.menuCamMode);
+  }, [hud?.heroPose, hud?.menuCamMode]);
 
-      <div className="relative mt-4 space-y-2.5">
-        {bars.map((b) => (
-          <div key={b.k}>
-            <div className="mb-0.5 flex justify-between font-tech text-[9px] tracking-[0.25em] text-white/60">
-              <span>{b.k}</span>
-              <span>{Math.round(b.v * 100)}</span>
-            </div>
-            <div className="stat-track">
-              <div className="stat-fill" style={{ width: `${b.v * 100}%`, background: `linear-gradient(90deg, ${col}55, ${col})` }} />
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="relative mt-4 flex flex-wrap gap-1.5">
-        <span className="cut-sm border border-white/20 bg-white/5 px-2 py-1 font-tech text-[9px] tracking-[0.2em] text-white/80">HP {def.hp}</span>
-        <span className="cut-sm border border-white/20 bg-white/5 px-2 py-1 font-tech text-[9px] tracking-[0.2em] text-white/80">COMBO ×{def.combo}</span>
-        {!!def.iq && def.iq > 1 && (
-          <span className="cut-sm border border-fuchsia-400/60 bg-fuchsia-500/15 px-2 py-1 font-tech text-[9px] tracking-[0.2em] text-fuchsia-200">{def.iq >= 12 ? 'STRATEGIS' : `IQ ${def.iq}×`}</span>
-        )}
-        {def.slam && (
-          <span className="cut-sm border px-2 py-1 font-tech text-[9px] tracking-[0.2em]" style={{ borderColor: col, color: col, background: `${col}18` }}>
-            OVERDRIVE
-          </span>
-        )}
-      </div>
-
-      <p className="relative mt-4 text-[12px] leading-relaxed text-white/65">{STYLE_DESC[index]}</p>
-    </div>
-  );
-}
-
-function SubPanel({ title, onBack, children }: { title: string; onBack: () => void; children: ReactNode }) {
-  return (
-    <div className="flex min-h-full flex-col justify-center gap-4 px-6 pb-8 pt-24 sm:px-12">
-      <button onClick={act(onBack)} className="ghost cut-sm stagger w-fit px-4 py-2 font-tech text-[11px] font-bold tracking-[0.25em]">
-        ◀ KEMBALI
-      </button>
-      <h2 className="stagger font-display text-5xl tracking-[0.12em] sm:text-6xl" style={{ animationDelay: '0.05s' }}>
-        {title}
-      </h2>
-      <div className="stagger space-y-4" style={{ animationDelay: '0.1s' }}>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-export function Menu({ unlocked, sel, onSel, onStart, sfx, onSfx, ultra, onUltra, fw, onFw, iq, onIq }: MenuProps) {
-  const [panel, setPanel] = useState<Panel>('main');
-  const def = smartDef(ultra ? ultraDef(OPPONENTS[sel]) : OPPONENTS[sel], iq);
-
-  // keyboard: Enter = start · 1-4 / ← → = choose opponent · Esc = back
+  // Keyboard navigation
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'BUTTON' || t.tagName === 'INPUT')) return;
       if (e.code === 'Escape') {
-        if (panel !== 'main') setPanel('main');
+        if (tab !== 'arena') setTab('arena');
         return;
       }
-      if (panel !== 'main') return;
       if (e.code === 'Enter') {
         onStart();
         return;
@@ -209,74 +153,224 @@ export function Menu({ unlocked, sel, onSel, onStart, sfx, onSfx, ultra, onUltra
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [panel, sel, unlocked, onSel, onStart]);
+  }, [tab, sel, unlocked, onSel, onStart]);
+
+  const setPose = (p: 'stand' | 'guard' | 'victory' | 'taunt') => {
+    setHeroPoseState(p);
+    game?.setHeroPose(p);
+  };
+
+  const toggleCam = () => {
+    const next = camMode === 'hero' ? 'arena' : 'hero';
+    setCamModeState(next);
+    game?.setMenuCamMode(next);
+  };
+
+  // Pointer drag for 360 robot inspection
+  const onPointerDown = (e: React.PointerEvent) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('button') || target.closest('input') || target.closest('a')) return;
+    dragRef.current = { dragging: true, startX: e.clientX, moved: false };
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const nx = (e.clientX / window.innerWidth - 0.5) * 2;
+    const ny = (e.clientY / window.innerHeight - 0.5) * 2;
+    game?.setHeroMouse(nx, ny);
+
+    if (!dragRef.current.dragging) return;
+    const dx = e.clientX - dragRef.current.startX;
+    if (Math.abs(dx) > 2) dragRef.current.moved = true;
+    game?.rotateHero(dx * 0.008);
+    dragRef.current.startX = e.clientX;
+  };
+
+  const onPointerUp = () => {
+    dragRef.current.dragging = false;
+  };
 
   return (
-    <div className="absolute inset-0 overflow-hidden text-white">
-      {/* ---------- atmosphere ---------- */}
+    <div
+      className="absolute inset-0 select-none overflow-hidden text-white"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+    >
+      {/* ---------- cinematic atmosphere ---------- */}
       <div className="menu-shade" />
       <div className="menu-streaks" />
       <div className="menu-scan" />
-      <div className="menu-edge hidden lg:block" />
+
+      {/* corner cyber markers */}
       <span className="corner left-3 top-3 border-l-2 border-t-2" />
       <span className="corner right-3 top-3 border-r-2 border-t-2" />
       <span className="corner bottom-3 left-3 border-b-2 border-l-2" />
       <span className="corner bottom-3 right-3 border-b-2 border-r-2" />
 
-      {/* ---------- top bar ---------- */}
-      <header className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center gap-3 px-6 py-4 sm:px-12">
-        <Emblem size={42} />
-        <div className="leading-none">
-          <div className="font-display text-[26px] tracking-[0.2em]">WRC</div>
-          <div className="mt-0.5 font-tech text-[8px] tracking-[0.4em] text-white/55 sm:text-[9px]">WORLD ROBOT CHAMPIONSHIP</div>
+      {/* =================================================================== TOP NAVIGATION BAR (Top Bar Contract: 3 zones) */}
+      <header className="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-center justify-between border-b border-white/10 bg-slate-950/40 px-4 py-3 backdrop-blur-md sm:px-8">
+        {/* Zone 1: Brand Wordmark */}
+        <div className="pointer-events-auto flex items-center gap-3">
+          <Emblem size={34} />
+          <div>
+            <div className="font-display text-[22px] leading-tight tracking-[0.14em]">
+              <span className="chrome-text">STEEL</span>{' '}
+              <span className={ultra ? 'red-text' : 'blue-text'}>TITANS</span>
+            </div>
+            <div className="font-tech text-[8px] tracking-[0.35em] text-white/55">
+              WORLD ROBOT CHAMPIONSHIP · 2026
+            </div>
+          </div>
         </div>
-        <div className="ml-auto mr-28 hidden items-center gap-2 sm:flex">
-          <span className="font-tech text-[10px] tracking-[0.3em] text-white/50">WORLD FINALS · 2026</span>
-          <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
-          <span className="font-tech text-[10px] font-bold tracking-[0.3em] text-red-400">LIVE</span>
+
+        {/* Zone 2: Navigation Tabs (Segmented Control) */}
+        <nav className="pointer-events-auto hidden md:flex items-center gap-1 rounded-lg border border-white/10 bg-black/50 p-1">
+          <button
+            onClick={act(() => setTab('arena'))}
+            className={`cut-sm flex items-center gap-1.5 px-3 py-1.5 font-tech text-[10px] font-bold tracking-[0.18em] transition-all ${
+              tab === 'arena'
+                ? 'bg-sky-500/25 text-sky-200 border border-sky-400/50 shadow-[0_0_12px_rgba(56,189,248,0.35)]'
+                : 'text-white/60 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <span>⚔</span> ARENA MATCH
+          </button>
+          <button
+            onClick={act(() => setTab('titan'))}
+            className={`cut-sm flex items-center gap-1.5 px-3 py-1.5 font-tech text-[10px] font-bold tracking-[0.18em] transition-all ${
+              tab === 'titan'
+                ? 'bg-sky-500/25 text-sky-200 border border-sky-400/50 shadow-[0_0_12px_rgba(56,189,248,0.35)]'
+                : 'text-white/60 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <span>🤖</span> TITAN SAYA
+          </button>
+          <button
+            onClick={act(() => setTab('controls'))}
+            className={`cut-sm flex items-center gap-1.5 px-3 py-1.5 font-tech text-[10px] font-bold tracking-[0.18em] transition-all ${
+              tab === 'controls'
+                ? 'bg-sky-500/25 text-sky-200 border border-sky-400/50 shadow-[0_0_12px_rgba(56,189,248,0.35)]'
+                : 'text-white/60 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <span>⌨</span> KONTROL
+          </button>
+          <button
+            onClick={act(() => setTab('settings'))}
+            className={`cut-sm flex items-center gap-1.5 px-3 py-1.5 font-tech text-[10px] font-bold tracking-[0.18em] transition-all ${
+              tab === 'settings'
+                ? 'bg-sky-500/25 text-sky-200 border border-sky-400/50 shadow-[0_0_12px_rgba(56,189,248,0.35)]'
+                : 'text-white/60 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <span>⚙</span> PENGATURAN
+          </button>
+        </nav>
+
+        {/* Zone 3: Actions & Quick Status */}
+        <div className="pointer-events-auto flex items-center gap-2">
+          {/* Camera View Mode Switcher */}
+          <button
+            onClick={act(toggleCam)}
+            className="cut-sm flex items-center gap-1.5 border border-sky-400/40 bg-sky-950/40 px-3 py-1.5 font-tech text-[9px] font-bold tracking-[0.18em] text-sky-200 transition hover:bg-sky-900/60"
+            title="Ganti sudut pandang kamera"
+          >
+            <span>🎥</span>
+            <span className="hidden sm:inline">KAMERA:</span>
+            <span>{camMode === 'hero' ? 'HERO VIEW' : 'ARENA CAM'}</span>
+          </button>
+
+          {/* Difficulty Badge */}
+          <button
+            onClick={act(() => onUltra(!ultra))}
+            className={`cut-sm hidden sm:flex items-center gap-1 border px-2.5 py-1.5 font-tech text-[9px] font-bold tracking-[0.18em] transition ${
+              ultra
+                ? 'border-red-500/60 bg-red-950/50 text-red-300'
+                : 'border-white/20 bg-white/5 text-white/70 hover:bg-white/10'
+            }`}
+          >
+            <span>{ultra ? '☠ ULTRA' : 'NORMAL'}</span>
+          </button>
         </div>
       </header>
 
-      {/* ---------- left column ---------- */}
-      <div className="no-scrollbar absolute inset-y-0 left-0 w-full overflow-y-auto lg:w-[560px]">
-        {panel === 'main' && (
-          <div key="main" className="flex min-h-full flex-col justify-center gap-5 px-6 pb-8 pt-24 sm:px-12">
-            {/* title */}
-            <div className="stagger">
-              <div className="mb-2 flex items-center gap-3">
-                <span className="h-[3px] w-10" style={{ background: ultra ? ULTRA_COLOR : '#ffb030' }} />
-                <span className="font-tech text-[10px] font-bold tracking-[0.4em] text-white/70">WORLD FINALS · 2026</span>
+      {/* Mobile Subnav Tabs */}
+      <div className="pointer-events-auto absolute inset-x-3 top-16 z-20 flex gap-1 md:hidden">
+        {(['arena', 'titan', 'controls', 'settings'] as MenuTab[]).map((t) => (
+          <button
+            key={t}
+            onClick={act(() => setTab(t))}
+            className={`cut-sm flex-1 py-1.5 text-center font-tech text-[9px] font-bold tracking-wider transition ${
+              tab === t
+                ? 'bg-sky-500/30 text-sky-200 border border-sky-400/60'
+                : 'bg-black/60 text-white/60 border border-white/10'
+            }`}
+          >
+            {t === 'arena' ? 'ARENA' : t === 'titan' ? 'TITAN' : t === 'controls' ? 'KONTROL' : 'OPSI'}
+          </button>
+        ))}
+      </div>
+
+      {/* =================================================================== MAIN CONTENT CONTAINER */}
+      <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-between p-4 pt-20 sm:p-8 sm:pt-20">
+        {/* ========================================================= LEFT COLUMN: MATCHMAKING DECK */}
+        {tab === 'arena' && (
+          <div className="no-scrollbar pointer-events-auto flex max-h-[calc(100vh-140px)] w-full flex-col gap-3.5 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/75 p-5 shadow-2xl backdrop-blur-xl sm:w-[420px] lg:w-[450px]">
+            {/* Stage Kick */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-1 rounded-full" style={{ background: ultra ? ULTRA_COLOR : '#38bdf8' }} />
+                <span className="font-tech text-[9px] font-bold tracking-[0.3em] text-white/70">
+                  {ultra ? '☠ ULTRA HARD DIVISION' : 'WORLD FINALS CHAMPIONSHIP'}
+                </span>
               </div>
-              <h1 className="title-skew font-display leading-[0.82]" style={{ fontSize: 'clamp(54px, 13vh, 112px)' }}>
-                <span className="chrome-text block">STEEL</span>
-                <span className={`block ${ultra ? 'red-text' : 'blue-text'}`}>TITANS</span>
-              </h1>
-              <div className="mt-3 h-[3px] w-40" style={{ background: 'linear-gradient(90deg,#ff3b3b,#2f7cff)', transform: 'skewX(-30deg)' }} />
+              <span className="font-tech text-[9px] tracking-[0.2em] text-white/40">
+                {unlocked + 1}/{OPPONENTS.length} TERBUKA
+              </span>
             </div>
 
-            <p className="stagger max-w-md text-[13px] leading-relaxed text-white/70" style={{ animationDelay: '0.1s' }}>
-              Kendalikan <b className="text-sky-300">{PLAYER_NAME}</b> — robot tinju raksasa. Jab, hook, uppercut, lalu lepaskan <b className="text-amber-300">Overdrive</b>. Menangkan <b className="text-white">2 ronde</b> untuk jadi juara dunia.
-            </p>
+            {/* Selected Opponent Banner */}
+            <div className="border-l-2 pl-3" style={{ borderColor: col }}>
+              <div className="font-tech text-[9px] tracking-[0.25em] text-white/50">
+                LAWAN TERPILIH · TIER {sel + 1}
+              </div>
+              <div className="font-display text-3xl tracking-wide sm:text-4xl" style={{ color: col, textShadow: `0 0 20px ${col}66` }}>
+                {def.name}
+              </div>
+              <div className="text-[11px] italic text-white/70">{def.title}</div>
+            </div>
 
-            {/* opponent select */}
-            <div className="stagger" style={{ animationDelay: '0.15s' }}>
-              <SectionTitle right={<span className="font-tech text-[9px] tracking-[0.2em] text-white/45">{unlocked + 1}/{OPPONENTS.length} TERBUKA</span>}>PILIH LAWAN</SectionTitle>
-              <div className="grid grid-cols-4 gap-2">
+            {/* Opponent Selection Grid */}
+            <div>
+              <div className="mb-1.5 flex justify-between font-tech text-[9px] font-bold tracking-[0.2em] text-white/60">
+                <span>PILIH LAWAN TANDING</span>
+                <span className="text-white/40">TEKAN 1–4</span>
+              </div>
+              <div className="grid grid-cols-4 gap-1.5">
                 {OPPONENTS.map((o, i) => {
                   const locked = i > unlocked;
                   const on = sel === i;
-                  const col = ultra ? ULTRA_COLOR : o.color;
+                  const oppCol = ultra ? ULTRA_COLOR : o.color;
                   return (
                     <button
                       key={o.name}
                       disabled={locked}
                       onClick={act(() => onSel(i))}
-                      className={`tile cut-sm relative overflow-hidden px-2 pb-2.5 pt-1.5 text-left ${on ? 'tile-on' : ''} ${locked ? 'opacity-40' : ''}`}
-                      style={cssVar('--c', col)}
+                      className={`tile cut-sm relative p-2 text-left transition-all ${
+                        on ? 'tile-on scale-[1.02] border-sky-400 shadow-[0_0_15px_rgba(56,189,248,0.3)]' : ''
+                      } ${locked ? 'cursor-not-allowed opacity-35' : ''}`}
+                      style={cssVar('--c', oppCol)}
                     >
-                      <div className="font-tech text-[9px] tracking-[0.2em] text-white/50">{String(i + 1).padStart(2, '0')}</div>
-                      <div className="font-display text-[15px] leading-tight sm:text-[18px]" style={{ color: locked ? '#9aa3b8' : col }}>
-                        {locked ? '🔒' : o.name.split(' ')[0]}
+                      <div className="flex items-center justify-between font-tech text-[8px] text-white/50">
+                        <span>0{i + 1}</span>
+                        {locked && <span>🔒</span>}
+                      </div>
+                      <div
+                        className="font-display text-[13px] leading-tight sm:text-[15px]"
+                        style={{ color: locked ? '#9aa3b8' : oppCol }}
+                      >
+                        {o.name.split(' ')[0]}
                       </div>
                     </button>
                   );
@@ -284,73 +378,132 @@ export function Menu({ unlocked, sel, onSel, onStart, sfx, onSfx, ultra, onUltra
               </div>
             </div>
 
-            {/* the opponent card (small screens: inline; large screens: right-hand side) */}
-            <div className="lg:hidden">
-              <div key={sel} className="pop-in">
-                <OpponentCard def={def} index={sel} ultra={ultra} />
-              </div>
-            </div>
-
-            <div className="stagger" style={{ animationDelay: '0.2s' }}>
+            {/* Difficulty & AI Tuning */}
+            <div className="space-y-3 rounded-lg border border-white/5 bg-black/40 p-3">
               <DifficultyPicker ultra={ultra} onPick={onUltra} />
-            </div>
-
-            <div className="stagger" style={{ animationDelay: '0.22s' }}>
               <IqPicker value={iq} onPick={onIq} />
             </div>
 
-            {/* play */}
-            <button onClick={act(onStart)} className={`play-btn cut stagger group relative w-full overflow-hidden px-6 py-4 text-left ${ultra ? 'play-ultra' : ''}`} style={{ animationDelay: '0.25s' }}>
-              <span className="relative z-10 flex items-center justify-between">
-                <span>
-                  <span className="block font-display text-[34px] leading-none tracking-[0.12em] sm:text-[42px]">{ultra ? '☠ MASUK RING' : 'MASUK RING'}</span>
-                  <span className="mt-1 block font-tech text-[10px] font-bold tracking-[0.3em] opacity-80">
-                    VS {def.name}
-                    {ultra ? ' · ULTRA HARD' : ''}
+            {/* GRAND CTA: ENTER ARENA */}
+            <button
+              onClick={act(onStart)}
+              className={`play-btn cut group relative w-full overflow-hidden px-5 py-4 text-left shadow-lg ${
+                ultra ? 'play-ultra' : ''
+              }`}
+            >
+              <div className="relative z-10 flex items-center justify-between">
+                <div>
+                  <span className="block font-display text-[30px] leading-none tracking-[0.14em] sm:text-[36px]">
+                    {ultra ? '☠ MASUK RING' : 'MASUK KE RING'}
                   </span>
+                  <span className="mt-1 block font-tech text-[9px] font-bold tracking-[0.25em] opacity-85">
+                    {PLAYER_NAME} VS {def.name} · TEKAN [ENTER]
+                  </span>
+                </div>
+                <span className="font-display text-4xl leading-none transition-transform group-hover:translate-x-1.5">
+                  ▶▶
                 </span>
-                <span className="font-display text-5xl leading-none opacity-90 transition group-hover:translate-x-1">▶▶</span>
-              </span>
+              </div>
               <span className="play-sheen" />
             </button>
+          </div>
+        )}
 
-            <div className="stagger grid grid-cols-2 gap-2" style={{ animationDelay: '0.3s' }}>
-              <button onClick={act(() => setPanel('settings'))} className="ghost cut-sm px-4 py-3 font-tech text-[11px] font-bold tracking-[0.25em]">
-                ⚙ PENGATURAN
-              </button>
-              <button onClick={act(() => setPanel('controls'))} className="ghost cut-sm px-4 py-3 font-tech text-[11px] font-bold tracking-[0.25em]">
-                ⌨ KONTROL
+        {/* ========================================================= TAB 2: TITAN SAYA (HANGAR & BLUEPRINT) */}
+        {tab === 'titan' && (
+          <div className="no-scrollbar pointer-events-auto flex max-h-[calc(100vh-140px)] w-full flex-col gap-4 overflow-y-auto rounded-xl border border-sky-400/20 bg-slate-950/80 p-5 shadow-2xl backdrop-blur-xl sm:w-[460px]">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div>
+                <span className="font-tech text-[9px] tracking-[0.3em] text-sky-400">BLUEPRINT TITAN PRIBADI</span>
+                <h2 className="font-display text-3xl tracking-wide text-white sm:text-4xl">
+                  {PLAYER_NAME}-9 <span className="text-sky-300">· APEX</span>
+                </h2>
+              </div>
+              <button
+                onClick={act(() => setTab('arena'))}
+                className="cut-sm border border-white/20 bg-white/5 px-3 py-1 font-tech text-[10px] text-white/70 hover:bg-white/10"
+              >
+                ◀ KEMBALI
               </button>
             </div>
 
-            <div className="hidden flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-white/50 sm:flex">
-              <span className="flex items-center gap-1.5"><Key>ENTER</Key> mulai</span>
-              <span className="flex items-center gap-1.5"><Key>←</Key><Key>→</Key> lawan</span>
-              <span className="flex items-center gap-1.5"><Key>1</Key>–<Key>{OPPONENTS.length}</Key> pilih cepat</span>
+            <div className="space-y-2.5 text-[12px] leading-relaxed text-white/75">
+              <p>
+                <b className="text-sky-300">{PLAYER_NAME}</b> adalah robot petarung generasi mutakhir dengan sasis titanium berlapis serat karbon ringan. Dirancang untuk tinju jarak menengah dan pertarungan agresif berdaya pukul tinggi.
+              </p>
+            </div>
+
+            {/* Spec Meters */}
+            <div className="space-y-2 rounded-lg border border-white/10 bg-black/40 p-3.5">
+              <div className="font-tech text-[9px] tracking-[0.25em] text-white/50">SPESIFIKASI SASIS &amp; SISTEM</div>
+              <div className="space-y-1.5">
+                {[
+                  { name: 'KAPASITAS DAYA TAHAN', val: '100 HP (Stabilizer Ringan)' },
+                  { name: 'TEKNOLOGI INTI', val: 'Dual Arc-Plasma Reactor (0x3fd8ff)' },
+                  { name: 'GAYA TARUNG', val: 'Pure Boxing + Dempsey Weave' },
+                  { name: 'SISTEM KINETIK', val: 'Hydro-Piston Punch Drive' },
+                ].map((s) => (
+                  <div key={s.name} className="flex justify-between border-b border-white/5 pb-1 text-[11px]">
+                    <span className="font-tech text-white/60">{s.name}</span>
+                    <span className="font-tech font-bold text-sky-300">{s.val}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Pose Tester */}
+            <div className="rounded-lg border border-white/10 bg-black/40 p-3.5">
+              <div className="mb-2 font-tech text-[9px] tracking-[0.25em] text-white/60">
+                UJI POSE DEPAN ROBOT
+              </div>
+              <div className="grid grid-cols-4 gap-1.5">
+                {[
+                  { id: 'stand', label: 'BERDIRI' },
+                  { id: 'guard', label: 'GUARD' },
+                  { id: 'victory', label: 'JUARA' },
+                  { id: 'taunt', label: 'TAUNT' },
+                ].map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={act(() => setPose(p.id as any))}
+                    className={`cut-sm py-2 font-tech text-[9px] font-bold tracking-wider transition ${
+                      heroPose === p.id
+                        ? 'border border-sky-400 bg-sky-500/30 text-sky-200'
+                        : 'border border-white/10 bg-white/5 text-white/60 hover:text-white'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-2 text-center font-tech text-[9px] text-white/40">
+                Geser kursor / drag layar untuk memutar robot 360°
+              </div>
             </div>
           </div>
         )}
 
-        {panel === 'settings' && (
-          <SubPanel key="settings" title="PENGATURAN" onBack={() => setPanel('main')}>
-            <div className="glass cut p-4">
-              <SfxPicker value={sfx} onPick={onSfx} />
+        {/* ========================================================= TAB 3: CONTROLS DECK */}
+        {tab === 'controls' && (
+          <div className="no-scrollbar pointer-events-auto flex max-h-[calc(100vh-140px)] w-full flex-col gap-3.5 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/80 p-5 shadow-2xl backdrop-blur-xl sm:w-[500px]">
+            <div className="flex items-center justify-between border-b border-white/10 pb-2">
+              <h2 className="font-display text-3xl tracking-wide text-white">PANDUAN KONTROL &amp; TEKNIK</h2>
+              <button
+                onClick={act(() => setTab('arena'))}
+                className="cut-sm border border-white/20 bg-white/5 px-3 py-1 font-tech text-[10px] text-white/70 hover:bg-white/10"
+              >
+                ◀ KEMBALI
+              </button>
             </div>
-            <div className="glass cut p-4">
-              <FootworkPicker value={fw} onPick={onFw} />
-            </div>
-          </SubPanel>
-        )}
-
-        {panel === 'controls' && (
-          <SubPanel key="controls" title="KONTROL" onBack={() => setPanel('main')}>
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-3">
               {CONTROLS.map((g) => (
-                <div key={g.title} className="glass cut-sm p-3">
-                  <div className="mb-2 font-tech text-[10px] font-bold tracking-[0.3em] text-amber-300">{g.title}</div>
+                <div key={g.title} className="rounded-lg border border-white/10 bg-black/40 p-3">
+                  <div className="mb-2 font-tech text-[9px] font-bold tracking-[0.25em] text-amber-300">
+                    {g.title}
+                  </div>
                   <div className="space-y-1.5">
                     {g.rows.map(([keys, label]) => (
-                      <div key={label} className="flex items-center gap-2 text-[12px] text-white/80">
+                      <div key={label} className="flex items-center gap-2 text-[11px] text-white/80">
                         <span className="flex shrink-0 items-center gap-1">
                           {keys.map((k, i) =>
                             k === '+' ? (
@@ -369,22 +522,185 @@ export function Menu({ unlocked, sel, onSel, onStart, sfx, onSfx, ultra, onUltra
                 </div>
               ))}
             </div>
-            <div className="glass cut-sm p-3 text-[11px] leading-5 text-white/60">
-              <b className="text-emerald-300">Sidestep</b> (tap 2× A/D) menghindari jab &amp; cross, tapi hook menyapu lebar. <b className="text-sky-300">Grab (L)</b> menembus blok. <b className="text-purple-300">Uppercut</b> melempar lawan ke udara — sambung{' '}
-              <b className="text-amber-300">juggle</b> sebelum jatuh. Dorong lawan ke tali ring untuk <b className="text-rose-300">ROPE BOUNCE</b> dan combo gratis! Tahan <b className="text-cyan-300">E</b> untuk gaya <b className="text-cyan-300">Peek-a-Boo</b> ala Ippo: badan menggoyang, menyelip dari jab &amp; cross, dan maju sendiri — makin lama menggoyang, makin dahsyat <b className="text-cyan-300">Dempsey Roll</b>-mu (tapi lemah terhadap grab!).
+          </div>
+        )}
+
+        {/* ========================================================= TAB 4: SETTINGS DECK */}
+        {tab === 'settings' && (
+          <div className="no-scrollbar pointer-events-auto flex max-h-[calc(100vh-140px)] w-full flex-col gap-4 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/80 p-5 shadow-2xl backdrop-blur-xl sm:w-[460px]">
+            <div className="flex items-center justify-between border-b border-white/10 pb-2">
+              <h2 className="font-display text-3xl tracking-wide text-white">PENGATURAN</h2>
+              <button
+                onClick={act(() => setTab('arena'))}
+                className="cut-sm border border-white/20 bg-white/5 px-3 py-1 font-tech text-[10px] text-white/70 hover:bg-white/10"
+              >
+                ◀ KEMBALI
+              </button>
             </div>
-          </SubPanel>
+            <div className="space-y-4">
+              <div className="rounded-lg border border-white/10 bg-black/40 p-4">
+                <SfxPicker value={sfx} onPick={onSfx} />
+              </div>
+              <div className="rounded-lg border border-white/10 bg-black/40 p-4">
+                <FootworkPicker value={fw} onPick={onFw} />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= RIGHT COLUMN: TACTICAL SCOUTING DOSSIER (Large Screens) */}
+        {tab === 'arena' && (
+          <aside className="no-scrollbar slide-r pointer-events-auto hidden max-h-[calc(100vh-140px)] w-[320px] overflow-y-auto rounded-xl border border-white/10 bg-slate-950/75 p-5 shadow-2xl backdrop-blur-xl lg:block">
+            <div className="flex items-center justify-between">
+              <span className="font-tech text-[9px] tracking-[0.3em] text-white/50">INTEL LAWAN</span>
+              {ultra && (
+                <span className="font-tech text-[9px] font-bold tracking-[0.2em] text-red-400">
+                  ☠ ULTRA
+                </span>
+              )}
+            </div>
+
+            <div className="mt-1 font-display text-3xl leading-tight" style={{ color: col, textShadow: `0 0 20px ${col}66` }}>
+              {def.name}
+            </div>
+            <div className="text-[11px] italic text-white/60">{def.title}</div>
+
+            {/* Threat Rating */}
+            <div className="mt-3 flex items-center justify-between border-y border-white/10 py-2">
+              <span className="font-tech text-[9px] tracking-[0.25em] text-white/50">TINGKAT ANCAMAN</span>
+              <div className="flex items-center gap-1.5">
+                <span className="flex text-xs">
+                  {[0, 1, 2, 3, 4].map((s) => (
+                    <span key={s} style={{ opacity: s < skulls ? 1 : 0.2, color: col }}>
+                      ☠
+                    </span>
+                  ))}
+                </span>
+                <span className="font-tech text-[9px] font-bold" style={{ color: col }}>
+                  {THREAT[skulls]}
+                </span>
+              </div>
+            </div>
+
+            {/* Attribute Meters */}
+            <div className="mt-3.5 space-y-2">
+              {bars.map((b) => (
+                <div key={b.k}>
+                  <div className="mb-0.5 flex justify-between font-tech text-[8px] tracking-[0.2em] text-white/60">
+                    <span>{b.k}</span>
+                    <span>{Math.round(b.v * 100)}%</span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                    <div
+                      className="h-full rounded-full transition-all duration-300"
+                      style={{ width: `${b.v * 100}%`, background: `linear-gradient(90deg, ${col}44, ${col})` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Badges */}
+            <div className="mt-4 flex flex-wrap gap-1.5">
+              <span className="cut-sm border border-white/15 bg-white/5 px-2 py-1 font-tech text-[9px] tracking-[0.15em] text-white/80">
+                HP {def.hp}
+              </span>
+              <span className="cut-sm border border-white/15 bg-white/5 px-2 py-1 font-tech text-[9px] tracking-[0.15em] text-white/80">
+                COMBO ×{def.combo}
+              </span>
+              {def.slam && (
+                <span
+                  className="cut-sm border px-2 py-1 font-tech text-[9px] tracking-[0.15em]"
+                  style={{ borderColor: col, color: col, background: `${col}15` }}
+                >
+                  OVERDRIVE
+                </span>
+              )}
+            </div>
+
+            {/* Tactical Advice */}
+            <div className="mt-4 rounded-lg border border-white/10 bg-black/40 p-3 text-[11px] leading-relaxed text-white/70">
+              <div className="mb-1 font-tech text-[9px] font-bold tracking-[0.2em] text-amber-300">
+                CATATAN TAKTIS PELATIH
+              </div>
+              {STYLE_DESC[sel]}
+            </div>
+          </aside>
         )}
       </div>
 
-      {/* ---------- right column: opponent card (large screens) ---------- */}
-      {panel === 'main' && (
-        <aside className="no-scrollbar slide-r absolute bottom-6 right-6 top-24 hidden w-[310px] overflow-y-auto lg:block">
-          <div key={sel} className="pop-in">
-            <OpponentCard def={def} index={sel} ultra={ultra} />
-          </div>
-        </aside>
-      )}
+      {/* =================================================================== CENTER-BOTTOM HERO HUD & POSE SWITCHER */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-3 z-30 flex flex-col items-center justify-center gap-1.5 px-4 sm:bottom-5">
+        <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-1.5 rounded-xl border border-white/15 bg-slate-950/75 px-3 py-2 shadow-2xl backdrop-blur-xl">
+          <span className="hidden font-tech text-[9px] font-bold tracking-[0.25em] text-sky-300 sm:inline">
+            POSE {PLAYER_NAME}:
+          </span>
+          <button
+            onClick={act(() => setPose('stand'))}
+            className={`cut-sm px-2.5 py-1 font-tech text-[9px] font-bold tracking-wider transition ${
+              heroPose === 'stand'
+                ? 'border border-sky-400 bg-sky-500/30 text-sky-200 shadow-[0_0_8px_rgba(56,189,248,0.3)]'
+                : 'text-white/60 hover:text-white hover:bg-white/10'
+            }`}
+          >
+            STAND
+          </button>
+          <button
+            onClick={act(() => setPose('guard'))}
+            className={`cut-sm px-2.5 py-1 font-tech text-[9px] font-bold tracking-wider transition ${
+              heroPose === 'guard'
+                ? 'border border-sky-400 bg-sky-500/30 text-sky-200 shadow-[0_0_8px_rgba(56,189,248,0.3)]'
+                : 'text-white/60 hover:text-white hover:bg-white/10'
+            }`}
+          >
+            GUARD
+          </button>
+          <button
+            onClick={act(() => setPose('victory'))}
+            className={`cut-sm px-2.5 py-1 font-tech text-[9px] font-bold tracking-wider transition ${
+              heroPose === 'victory'
+                ? 'border border-sky-400 bg-sky-500/30 text-sky-200 shadow-[0_0_8px_rgba(56,189,248,0.3)]'
+                : 'text-white/60 hover:text-white hover:bg-white/10'
+            }`}
+          >
+            JUARA
+          </button>
+          <button
+            onClick={act(() => setPose('taunt'))}
+            className={`cut-sm px-2.5 py-1 font-tech text-[9px] font-bold tracking-wider transition ${
+              heroPose === 'taunt'
+                ? 'border border-sky-400 bg-sky-500/30 text-sky-200 shadow-[0_0_8px_rgba(56,189,248,0.3)]'
+                : 'text-white/60 hover:text-white hover:bg-white/10'
+            }`}
+          >
+            TAUNT
+          </button>
+
+          <span className="hidden h-3 w-px bg-white/20 sm:inline" />
+
+          {/* Quick Camera Mode Switch */}
+          <button
+            onClick={act(toggleCam)}
+            className="cut-sm flex items-center gap-1 border border-white/20 bg-white/5 px-2.5 py-1 font-tech text-[9px] font-bold tracking-wider text-white/80 transition hover:bg-white/15"
+          >
+            <span>🎥</span>
+            <span>{camMode === 'hero' ? 'HERO VIEW' : 'ARENA CAM'}</span>
+          </button>
+
+          {/* 360 Reset */}
+          <button
+            onClick={act(() => game?.resetHeroRotation())}
+            className="cut-sm px-2 py-1 font-tech text-[9px] text-white/50 hover:text-white"
+            title="Kembalikan hadap depan"
+          >
+            ↺ RESET HADAP
+          </button>
+        </div>
+
+        <div className="font-tech text-[8px] tracking-[0.25em] text-white/40 drop-shadow">
+          DRAG LAYAR UNTUK INSPEKSI 360° · ROBOT BERDIRI DI DEPAN DENGAN BACKGROUND SPARRING ARENA
+        </div>
+      </div>
     </div>
   );
 }

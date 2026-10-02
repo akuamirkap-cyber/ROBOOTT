@@ -26,10 +26,10 @@ export interface Opt {
   lt: number; // leg thickness (slimmer = more athletic)
 }
 
-// fs = fist size: smaller gloves on a slimmer, tapered arm read as athletic instead of cartoonish
-// Atom: a lean, athletic sparring bot — narrow chest, slim limbs, compact gloves (the reference build)
-export const ATOM_OPT: Opt = { variant: 'atom', th: 0.84, cw: 0.8, fs: 0.84, lt: 0.9 };
-export const BRUTE_OPT: Opt = { variant: 'brute', th: 1.06, cw: 1.0, fs: 1.0, lt: 1.04 };
+// fs = fist size: compact gloves on tapered arms read as athletic champion boxers
+// Atom: a lean, athletic sparring bot — sharp V-taper, sculpted limbs, compact gloves (champion boxer build)
+export const ATOM_OPT: Opt = { variant: 'atom', th: 0.78, cw: 0.8, fs: 0.76, lt: 0.82 };
+export const BRUTE_OPT: Opt = { variant: 'brute', th: 0.96, cw: 0.98, fs: 0.88, lt: 0.94 };
 
 type V3 = [number, number, number];
 type Pts = [number, number][];
@@ -182,62 +182,384 @@ function buildLegs(r: Robot, b: Batch, c: Ctx, o: Opt) {
   const atom = o.variant === 'atom';
   const sy1 = L1 / 1.5; // the thigh / shin meshes are modelled at the old length and stretched
   const sy2 = L2 / 1.42;
+
   for (let i = 0; i < 2; i++) {
     const s = i === 0 ? 1 : -1;
+
+    // =========================== 1. HIP JOINT & GIMBAL ===========================
     const hip = new THREE.Group();
-    hip.position.set(s * 0.76, HIP_Y, 0);
+    hip.position.set(s * 0.74, HIP_Y, 0);
     hip.rotation.order = 'ZXY';
     r.pelvis.add(hip);
     r.hipJ.push(hip);
-    b.add(hip, sph(0.44 * lt), c.joint);
 
-    // ----- thigh: a quad sweep that is full at the top and slim at the knee
+    // Mechanical hip gimbal core & locking collar
+    b.add(hip, sph(0.38 * lt), c.joint);
+    b.add(hip, torus(0.38 * lt, 0.038, 24), c.steel, 0, 0, 0, [0, 0, s * 0.2]);
+    b.add(hip, tcyl(0.3 * lt, 0.3 * lt, 0.2, 18).rotateZ(Math.PI / 2), c.dark, s * 0.1 * lt, 0, 0);
+    b.add(hip, RB(0.1 * lt, 0.32, 0.22 * lt, 0.03), c.joint, s * 0.24 * lt, -0.1, 0);
+
+    // High-pressure hydraulic flex conduit curving from pelvis to upper thigh
+    const hipHose = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(s * 0.1, 0.26, 0.14),
+      new THREE.Vector3(s * 0.26, 0.06, 0.18),
+      new THREE.Vector3(s * 0.22, -0.2, 0.15),
+    ]);
+    b.add(hip, new THREE.TubeGeometry(hipHose, 12, 0.03, 6), c.rubber);
+
+    // =========================== 2. THIGH (ATHLETIC SPRINTER QUAD) ===========================
     const thigh = new THREE.Group();
     thigh.scale.set(1, sy1, 1);
     hip.add(thigh);
-    b.add(thigh, lathe([[0, -1.5], [0.27, -1.5], [0.33, -1.38], [0.41, -1.1], [0.53, -0.72], [0.62, -0.4], [0.61, -0.16], [0.46, -0.03], [0, 0]], lt), c.sec);
-    b.add(thigh, arcPlate(0.6 * lt, 0.68 * lt, 1.6, 0.8), c.main, 0, -0.6, 0);
-    b.add(thigh, arcPlate(0.42 * lt, 0.49 * lt, 2.2, 0.2), c.accent, 0, -1.22, 0);
-    b.add(thigh, arcPlate(0.53 * lt, 0.59 * lt, 2.0, 0.07), c.steel, 0, -0.1, 0);
-    b.add(thigh, RB(0.05, 0.75, 0.05, 0.02), c.glow, s * 0.6 * lt, -0.7, 0.1);
-    piston(b, c, thigh, s * 0.18 * lt, -0.7, -0.52 * lt, 1.0, 0.055);
 
-    // ----- knee
+    // Sculpted bionic under-frame core (chiseled athletic taper: full upper quad -> lean knee)
+    b.add(
+      thigh,
+      lathe(
+        [
+          [0, -1.5],
+          [0.22, -1.5],
+          [0.26, -1.38],
+          [0.33, -1.1],
+          [0.45, -0.72],
+          [0.52, -0.4],
+          [0.5, -0.16],
+          [0.38, -0.03],
+          [0, 0],
+        ],
+        lt,
+      ),
+      c.sec,
+    );
+
+    // Upper Quad Ballistic Shield: sleek, form-fitting forward carapace
+    b.add(thigh, arcPlate(0.53 * lt, 0.61 * lt, 1.6, 0.74), atom ? c.main : c.sec, 0, -0.52, 0);
+
+    // Center Titanium Impact Spine (razor-sharp deflection crest)
+    b.add(thigh, RB(0.055, 0.8, 0.065, 0.015), c.steel, 0, -0.56, 0.59 * lt);
+
+    // Center Quad Cybernetic Glow Channel (vertical LED strip)
+    b.add(thigh, RB(0.032, 0.7, 0.032, 0.01), c.glow, 0, -0.55, 0.62 * lt);
+
+    // Lower Quad Suprapatellar Guard (articulates cleanly over knee)
+    b.add(thigh, arcPlate(0.36 * lt, 0.43 * lt, 2.0, 0.26), c.accent, 0, -1.18, 0);
+    b.add(thigh, arcPlate(0.38 * lt, 0.45 * lt, 1.8, 0.06), c.steel, 0, -1.34, 0);
+
+    // Upper Quad Collar Ring
+    b.add(thigh, arcPlate(0.46 * lt, 0.52 * lt, 2.0, 0.07), c.steel, 0, -0.08, 0);
+
+    // Lateral Armor Wings (outer flank): sleek heat exhaust louvers & energy status bar
+    b.add(thigh, RB(0.09 * lt, 0.68, 0.42 * lt, 0.04), c.main, s * 0.51 * lt, -0.62, 0.0);
+    for (let k = 0; k < 3; k++) {
+      b.add(thigh, RB(0.11 * lt, 0.038, 0.3 * lt, 0.012), c.steel, s * 0.53 * lt, -0.5 - k * 0.12, 0.0);
+    }
+    b.add(thigh, RB(0.035, 0.55, 0.035, 0.012), c.glow, s * 0.55 * lt, -0.62, 0.1 * lt);
+    b.add(thigh, RB(0.04, 0.62, 0.1 * lt, 0.015), atom ? c.accent : c.dark, s * 0.53 * lt, -0.62, -0.12 * lt);
+
+    // Dual Rear Hamstring Hydraulic Shock Absorbers (Twin chrome cylinders)
+    piston(b, c, thigh, s * 0.16 * lt, -0.72, -0.44 * lt, 0.92, 0.042);
+    piston(b, c, thigh, -s * 0.11 * lt, -0.72, -0.42 * lt, 0.88, 0.038);
+    // Rear Hamstring Armor Shell
+    b.add(thigh, arcPlate(0.39 * lt, 0.46 * lt, 1.4, 0.62), c.dark, 0, -0.68, 0, [0, Math.PI, 0]);
+
+    // =========================== 3. KNEE (COMPACT DUAL ROTARY HUBS & ARTICULATED CHEVRON PATELLA) ===========================
     const knee = new THREE.Group();
     knee.position.y = -L1;
     hip.add(knee);
     r.kneeJ.push(knee);
-    b.add(knee, sph(0.38 * lt), c.joint, 0, 0, 0.02);
+
+    // Knee joint center bearing
+    b.add(knee, sph(0.31 * lt), c.joint, 0, 0, 0.02);
+
+    // Dual High-Torque Rotary Actuators (Medial & Lateral Disc Hubs)
+    for (let j = 0; j < 2; j++) {
+      const side = j === 0 ? 1 : -1;
+      b.add(knee, tcyl(0.27 * lt, 0.27 * lt, 0.09, 24).rotateZ(Math.PI / 2), c.steel, side * 0.36 * lt, 0, 0.02);
+      b.add(knee, torus(0.19 * lt, 0.026, 20).rotateY(Math.PI / 2), c.accent, side * 0.4 * lt, 0, 0.02);
+      b.add(knee, RB(0.07, 0.07, 0.11, 0.015), c.dark, side * 0.42 * lt, 0, 0.02);
+    }
+
+    // Articulated Chevron Patella (Lean Strike Knee Guard)
     const cap = new THREE.Group();
-    cap.position.set(0, 0.0, 0.32 * lt);
+    cap.position.set(0, 0.0, 0.28 * lt);
     knee.add(cap);
-    b.add(cap, dome(0.36 * lt, 0.5).rotateX(Math.PI / 2), c.main, 0, 0, 0, [0, 0, 0], [1.05, 1.1, 0.75]);
-    b.add(cap, torus(0.36 * lt, 0.028, 24), c.accent, 0, 0, 0.0);
     r.kneeCaps.push(cap);
 
-    // ----- calf: diamond-shaped muscle, shin guard
+    // Multi-faceted aggressive chevron strike prow
+    b.add(
+      cap,
+      sideSolid(
+        [
+          [-0.18, -0.26],
+          [0.14, -0.29],
+          [0.3, -0.03],
+          [0.22, 0.22],
+          [-0.14, 0.26],
+          [-0.24, 0.0],
+        ],
+        0.58 * lt,
+        0.035,
+      ),
+      c.main,
+    );
+    b.add(
+      cap,
+      sideSolid(
+        [
+          [0.08, -0.22],
+          [0.28, -0.03],
+          [0.19, 0.19],
+          [0.06, 0.17],
+        ],
+        0.63 * lt,
+        0.025,
+      ),
+      c.sec,
+    );
+    // Center Titanium Strike Crest (Apex Blade)
+    b.add(
+      cap,
+      plate(
+        [
+          [-0.11, 0.19],
+          [0.11, 0.19],
+          [0.16, 0.0],
+          [0, -0.25],
+          [-0.16, 0.0],
+        ],
+        0.09,
+        0.025,
+      ),
+      c.steel,
+      0,
+      0,
+      0.27 * lt,
+    );
+    // Glowing Strike Core Diamond
+    b.add(
+      cap,
+      plate(
+        [
+          [-0.06, 0.06],
+          [0.06, 0.06],
+          [0.09, 0.0],
+          [0, -0.12],
+          [-0.09, 0.0],
+        ],
+        0.05,
+        0.015,
+      ),
+      c.glow,
+      0,
+      0,
+      0.32 * lt,
+    );
+    b.add(cap, tcyl(0.035, 0.035, 0.06, 16).rotateX(Math.PI / 2), c.core, 0, 0, 0.34 * lt);
+    // Side ear deflectors on patella
+    for (let j = 0; j < 2; j++) {
+      const ks = j === 0 ? 1 : -1;
+      b.add(cap, RB(0.05, 0.34, 0.18, 0.025), c.accent, ks * 0.33 * lt, -0.02, 0.04, [0, 0, ks * -0.15]);
+    }
+
+    // =========================== 4. CRUS / SHIN & CALF (ATHLETIC HIGH-CALF PROPULSION) ===========================
     const shin = new THREE.Group();
     shin.scale.set(1, sy2, 1);
     knee.add(shin);
-    b.add(shin, lathe([[0, -1.42], [0.25, -1.42], [0.29, -1.3], [0.35, -1.0], [0.45, -0.62], [0.5, -0.36], [0.42, -0.1], [0, 0]], lt), c.sec);
-    b.add(shin, new THREE.CapsuleGeometry(0.21 * lt, 0.46, 6, 14), atom ? c.dark : c.main, 0, -0.5, -0.36 * lt, [0, 0, 0], [1.15, 1, 0.9]);
-    b.add(shin, arcPlate(0.47 * lt, 0.54 * lt, 1.5, 0.98), c.main, 0, -0.78, -0.02 * lt, [0.15, 0, 0]);
-    b.add(shin, RB(0.06, 0.88, 0.05, 0.02), c.accent, 0, -0.8, 0.5 * lt, [0.15, 0, 0]);
-    b.add(shin, RB(0.05, 0.65, 0.05, 0.02), c.glow, s * 0.5 * lt, -0.85, 0.05);
 
-    // ----- ankle (bellows) + boot
+    // Sculpted bionic shin core (athletic high gastrocnemius curve)
+    b.add(
+      shin,
+      lathe(
+        [
+          [0, -1.42],
+          [0.2, -1.42],
+          [0.24, -1.3],
+          [0.29, -1.0],
+          [0.39, -0.62],
+          [0.44, -0.36],
+          [0.36, -0.1],
+          [0, 0],
+        ],
+        lt,
+      ),
+      c.sec,
+    );
+
+    // Heavy Combat Greave (Front Shin Shield): aerodynamic forward prow
+    b.add(
+      shin,
+      sideSolid(
+        [
+          [-0.12, -1.22],
+          [0.22, -1.14],
+          [0.35, -0.72],
+          [0.3, -0.3],
+          [0.08, -0.08],
+          [-0.14, -0.08],
+        ],
+        0.5 * lt,
+        0.035,
+      ),
+      c.main,
+    );
+    b.add(
+      shin,
+      sideSolid(
+        [
+          [0.14, -1.12],
+          [0.3, -0.7],
+          [0.25, -0.32],
+        ],
+        0.55 * lt,
+        0.025,
+      ),
+      c.sec,
+    );
+    // Titanium Center Deflection Blade along shin ridge
+    b.add(shin, RB(0.055, 0.95, 0.065, 0.015), c.steel, 0, -0.72, 0.42 * lt, [0.14, 0, 0]);
+    // Dual Shin Status LEDs flanking the blade
+    for (let j = 0; j < 2; j++) {
+      const ss = j === 0 ? 1 : -1;
+      b.add(shin, RB(0.028, 0.72, 0.03, 0.01), c.glow, ss * 0.14 * lt, -0.74, 0.38 * lt, [0.14, 0, 0]);
+    }
+    // Lower Shin Shock Ring
+    b.add(shin, arcPlate(0.3 * lt, 0.36 * lt, 2.2, 0.12), c.accent, 0, -1.24, 0);
+
+    // Rear Calf Housing (Streamlined Bionic Propulsion Pack)
+    b.add(
+      shin,
+      sideSolid(
+        [
+          [-0.42, -0.22],
+          [-0.5, -0.55],
+          [-0.45, -0.92],
+          [-0.28, -1.2],
+          [-0.12, -1.18],
+          [-0.08, -0.18],
+        ],
+        0.48 * lt,
+        0.04,
+      ),
+      c.dark,
+    );
+
+    // DUAL INTEGRATED ROCKET THRUSTER NOZZLES (athletic flush-mount)
+    for (let k = 0; k < 2; k++) {
+      const ty = -0.45 - k * 0.3;
+      const tz = -0.46 * lt;
+      // Conical exhaust nozzle bell
+      b.add(shin, tcyl(0.085 * lt, 0.13 * lt, 0.2, 18).rotateX(-Math.PI / 2 + 0.22), c.dark, 0, ty, tz);
+      // Polished titanium nozzle rim ring
+      b.add(shin, torus(0.12 * lt, 0.022, 18).rotateX(-Math.PI / 2 + 0.22), c.steel, 0, ty - 0.08, tz - 0.07);
+      // Glowing plasma exhaust core
+      b.add(shin, tcyl(0.07 * lt, 0.07 * lt, 0.04, 16).rotateX(-Math.PI / 2 + 0.22), c.glow, 0, ty + 0.02, tz + 0.02);
+      b.add(shin, tcyl(0.035 * lt, 0.035, 0.06, 12).rotateX(-Math.PI / 2 + 0.22), c.core, 0, ty + 0.025, tz + 0.025);
+    }
+
+    // Calf heat dispersion radiator fins
+    for (let k = 0; k < 3; k++) {
+      b.add(shin, RB(0.3 * lt, 0.028, 0.11, 0.008), c.steel, 0, -0.28 - k * 0.08, -0.37 * lt);
+    }
+
+    // Dual Achilles Tendon Hydraulic Shock Rams (sleek athletic sinews)
+    piston(b, c, shin, s * 0.12 * lt, -1.05, -0.34 * lt, 0.78, 0.034);
+    piston(b, c, shin, -s * 0.12 * lt, -1.05, -0.34 * lt, 0.78, 0.034);
+
+    // Lateral Shin Armor Wings (outer flank)
+    b.add(shin, RB(0.065, 0.76, 0.26 * lt, 0.03), c.main, s * 0.38 * lt, -0.75, 0.04, [0.08, 0, s * -0.06]);
+    b.add(shin, RB(0.03, 0.62, 0.03, 0.01), c.glow, s * 0.41 * lt, -0.75, 0.11 * lt);
+
+    // =========================== 5. ANKLE & AGILE BOXING BOOT (LIGHTWEIGHT COMBAT CHASSIS) ===========================
     const ankle = new THREE.Group();
     ankle.position.y = -L2;
     knee.add(ankle);
     r.footJ.push(ankle);
-    b.add(ankle, tcyl(0.28 * lt, 0.28 * lt, 0.34, 18), c.joint, 0, 0.1, 0);
-    for (let k = 0; k < 3; k++) b.add(ankle, torus(0.28 * lt, 0.035, 20), c.rubber, 0, 0.22 - k * 0.1, 0, [Math.PI / 2, 0, 0]);
-    const bw = 0.82 + lt * 0.08;
-    b.add(ankle, sideSolid([[-0.5, -0.1], [-0.54, 0.1], [-0.38, 0.27], [0.32, 0.3], [0.7, 0.15], [1.1, 0.0], [1.2, -0.1]], bw, 0.06), c.dark);
-    b.add(ankle, sideSolid([[0.55, 0.2], [1.0, 0.07], [1.2, -0.04], [1.2, -0.12], [0.55, -0.12]], bw + 0.07, 0.045), c.main, 0, 0.0, 0);
-    b.add(ankle, RB(bw + 0.04, 0.1, 0.4, 0.05), c.accent, 0, 0.27, 0.0);
-    b.add(ankle, RB(bw + 0.1, 0.1, 1.82, 0.05), c.rubber, 0, -0.16, 0.36);
-    b.add(ankle, RB(0.66, 0.07, 0.06, 0.02), c.glow, 0, 0.05, -0.56);
+
+    // Ribbed dust-sealed industrial ankle bellows
+    b.add(ankle, tcyl(0.23 * lt, 0.23 * lt, 0.36, 18), c.joint, 0, 0.1, 0);
+    for (let k = 0; k < 4; k++) {
+      b.add(ankle, torus(0.23 * lt, 0.026, 20), c.rubber, 0, 0.24 - k * 0.09, 0, [Math.PI / 2, 0, 0]);
+    }
+
+    // Lateral Ankle Pivot Armor Discs (Malleolus Guards)
+    for (let j = 0; j < 2; j++) {
+      const as = j === 0 ? 1 : -1;
+      b.add(ankle, tcyl(0.14, 0.14, 0.07, 18).rotateZ(Math.PI / 2), c.steel, as * (0.32 + lt * 0.05), 0.06, 0.0);
+      b.add(ankle, torus(0.14, 0.02, 18).rotateY(Math.PI / 2), c.accent, as * (0.35 + lt * 0.05), 0.06, 0.0);
+    }
+
+    // Athletic Boxing Boot Chassis (streamlined width ~0.65 for agile dancing footwork)
+    const bw = 0.58 + lt * 0.08;
+
+    // Main Foot Hull: sleek contoured profile from heel (-0.52) to toe (+1.22)
+    b.add(
+      ankle,
+      sideSolid(
+        [
+          [-0.52, -0.1],
+          [-0.55, 0.12],
+          [-0.34, 0.25],
+          [0.2, 0.29],
+          [0.6, 0.18],
+          [1.08, 0.06],
+          [1.22, -0.06],
+          [1.22, -0.14],
+          [-0.52, -0.14],
+        ],
+        bw,
+        0.045,
+      ),
+      c.dark,
+    );
+
+    // Angled Ballistic Instep Carapace
+    b.add(
+      ankle,
+      sideSolid(
+        [
+          [0.1, 0.29],
+          [0.52, 0.2],
+          [0.98, 0.09],
+          [1.14, -0.02],
+          [1.14, -0.1],
+          [0.1, -0.1],
+        ],
+        bw + 0.04,
+        0.035,
+      ),
+      c.main,
+    );
+
+    // Front Titanium Chisel Toe Bumper & Kick Guard
+    b.add(ankle, RB(bw + 0.05, 0.14, 0.24, 0.03), c.steel, 0, -0.04, 1.12);
+    b.add(ankle, RB(bw * 0.72, 0.038, 0.05, 0.012), c.glow, 0, 0.04, 1.19);
+
+    // Upper Instep Hazard Plate & Status Light
+    b.add(ankle, RB(bw * 0.68, 0.08, 0.32, 0.025), c.accent, 0, 0.27, 0.08);
+    b.add(ankle, RB(0.04, 0.04, 0.38, 0.012), c.glow, 0, 0.31, 0.17);
+
+    // Deep-Lug Industrial Sole Treads (High-Traction Athletic Rubber Lugs)
+    // Front tread block
+    b.add(ankle, RB(bw + 0.05, 0.08, 0.62, 0.025), c.rubber, 0, -0.17, 0.82);
+    // 3 Transverse Grip Cleats
+    for (let k = 0; k < 3; k++) {
+      b.add(ankle, RB(bw + 0.06, 0.035, 0.06, 0.01), c.dark, 0, -0.205, 0.62 + k * 0.2);
+    }
+    // Midfoot Steel Arch Bridge
+    b.add(ankle, RB(bw * 0.78, 0.05, 0.32, 0.015), c.steel, 0, -0.15, 0.22);
+    // Rear Heel Tread Block
+    b.add(ankle, RB(bw + 0.05, 0.08, 0.54, 0.025), c.rubber, 0, -0.17, -0.24);
+
+    // Reinforced Stabilizer Heel Block
+    b.add(ankle, RB(bw + 0.04, 0.22, 0.32, 0.03), c.dark, 0, 0.04, -0.34);
+    // Dual Recoil Damping Cylinders on rear heel
+    for (let j = 0; j < 2; j++) {
+      const hs = j === 0 ? 1 : -1;
+      b.add(ankle, tcyl(0.055, 0.055, 0.2, 14), c.steel, hs * 0.26 * bw, 0.11, -0.44);
+    }
+    // Rear Glowing Neon Brake / Energy Exhaust Strip
+    b.add(ankle, RB(bw * 0.8, 0.05, 0.045, 0.012), c.glow, 0, 0.08, -0.54);
+    b.add(ankle, RB(bw * 0.42, 0.035, 0.05, 0.008), c.core, 0, 0.08, -0.55);
   }
 }
 
@@ -386,8 +708,8 @@ function buildNeckAndHead(r: Robot, b: Batch, c: Ctx, o: Opt) {
   H.position.set(0, 0.5, 0.06);
   H.scale.setScalar(1.04); // head is 20% smaller than before (1.3 → 1.04)
   N.add(H);
-  if (o.variant === 'atom') atomHelmet(H, b, c);
-  else bruteHelmet(H, b, c);
+  if (o.variant === 'atom') atomHelmet(r, H, b, c);
+  else bruteHelmet(r, H, b, c);
 }
 
 /**
@@ -395,7 +717,7 @@ function buildNeckAndHead(r: Robot, b: Batch, c: Ctx, o: Opt) {
  * radiator crown of vertical fins, a deeply recessed dark WIRE-MESH face under an overhanging brow, and two
  * round, ringed cyan eyes glowing through the mesh. No visor slit, no jaw — the mesh is the face.
  */
-function atomHelmet(H: THREE.Group, b: Batch, c: Ctx) {
+function atomHelmet(r: Robot, H: THREE.Group, b: Batch, c: Ctx) {
   const put = (g: THREE.BufferGeometry, m: THREE.Material, x = 0, y = 0, z = 0, rot?: V3, scl?: V3) => b.add(H, g, m, x, y, z, rot, scl);
 
   // ================= helmet shell: tall, soft-cornered box that tapers down towards the mesh =================
@@ -427,8 +749,7 @@ function atomHelmet(H: THREE.Group, b: Batch, c: Ctx) {
   put(RB(0.64, 0.66, 0.03, 0.02), c.steel, 0, -0.14, 0.355, [0, 0, 0], [1, 1, 0.4]); // mesh frame
 
   // ================= eyes: angular hex optics, tilted into a glare =================
-  // (plain circles looked flat — these are layered camera lenses: hex bezel → socket → iris → scan lines →
-  //  a white-hot slit pupil, each pair tilted so the outer corner rides up)
+  // Layered camera optics with dynamic motion: hex bezel → socket → iris → moving pupil → scanning laser → anamorphic lens flare
   for (let i = 0; i < 2; i++) {
     const s = i === 0 ? 1 : -1;
     const x = s * 0.16;
@@ -436,13 +757,71 @@ function atomHelmet(H: THREE.Group, b: Batch, c: Ctx) {
     const tilt: V3 = [0, 0, s * 0.26]; // outer corner lifted → an aggressive glare
     put(tcyl(0.12, 0.12, 0.035, 6).rotateX(Math.PI / 2), c.steel, x, y, 0.368, tilt); // hex bezel
     put(tcyl(0.1, 0.1, 0.03, 6).rotateX(Math.PI / 2), c.dark, x, y, 0.384, tilt); // socket
-    put(tcyl(0.086, 0.086, 0.025, 6).rotateX(Math.PI / 2), c.glow, x, y, 0.396, tilt); // glowing iris
-    // dark scan lines across the lens + a bright vertical slit pupil
-    for (let k = -1; k <= 1; k++) put(RB(0.15, 0.014, 0.015, 0.005), c.dark, x, y + k * 0.034, 0.404, tilt);
-    put(RB(0.024, 0.095, 0.018, 0.007), c.core, x, y, 0.409, tilt);
-    put(RB(0.05, 0.016, 0.016, 0.005), c.core, x, y, 0.409, tilt); // hot cross-glint
-    // angled brow slash over the eye
-    put(RB(0.19, 0.024, 0.022, 0.008), c.accent, x, y + 0.115, 0.4, [0, 0, s * 0.32]);
+    put(RB(0.19, 0.024, 0.022, 0.008), c.accent, x, y + 0.115, 0.4, [0, 0, s * 0.32]); // angled brow slash
+
+    // Dynamic Ocular Eye Group on head
+    const eye = new THREE.Group();
+    eye.position.set(x, y, 0.395);
+    eye.rotation.set(0, 0, s * 0.26);
+    H.add(eye);
+    r.eyeOptics.push(eye);
+
+    // Glowing Iris base plate
+    const irisMat = new THREE.MeshBasicMaterial({ color: c.style.glow });
+    const iris = new THREE.Mesh(tcyl(0.086, 0.086, 0.012, 6).rotateX(Math.PI / 2), irisMat);
+    eye.add(iris);
+
+    // Moving Pupil / Ocular Core group (tracks target and saccades)
+    const pupil = new THREE.Group();
+    eye.add(pupil);
+    r.eyePupils.push(pupil);
+
+    // Dynamic slit core + hot cross glint
+    const slit = new THREE.Mesh(RB(0.024, 0.095, 0.016, 0.006), c.core);
+    slit.position.z = 0.01;
+    pupil.add(slit);
+
+    const cross = new THREE.Mesh(RB(0.05, 0.016, 0.016, 0.005), c.core);
+    cross.position.z = 0.01;
+    pupil.add(cross);
+
+    // Micro aperture ring around the pupil
+    const ringMat = new THREE.MeshBasicMaterial({ color: c.style.glow });
+    const ring = new THREE.Mesh(torus(0.044, 0.006, 16), ringMat);
+    ring.position.z = 0.008;
+    pupil.add(ring);
+
+    // Active Laser Scanline Bar (sweeps up and down inside the socket)
+    const scanMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.85,
+    });
+    const scanBar = new THREE.Mesh(RB(0.13, 0.008, 0.008, 0.002), scanMat);
+    scanBar.position.z = 0.014;
+    eye.add(scanBar);
+    r.eyeScanners.push(scanBar);
+
+    // Anamorphic Lens Flare (shimmering horizontal optical flare across the lens)
+    const flareGeo = new THREE.PlaneGeometry(0.36, 0.038);
+    const flareMat = new THREE.MeshBasicMaterial({
+      color: c.style.glow,
+      transparent: true,
+      opacity: 0.75,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const flare = new THREE.Mesh(flareGeo, flareMat);
+    flare.position.z = 0.02;
+    eye.add(flare);
+    r.eyeFlares.push(flare);
+
+    // Subtle Ocular Glare Light
+    const eyeLight = new THREE.PointLight(c.style.glow, 1.2, 1.4, 2.0);
+    eyeLight.position.set(0, 0, 0.04);
+    eye.add(eyeLight);
+    r.eyeLights.push(eyeLight);
   }
 
   // ================= sides and back =================
@@ -459,7 +838,7 @@ function atomHelmet(H: THREE.Group, b: Batch, c: Ctx) {
 }
 
 /** Heavier Jaeger head for the opponents: a wide hammer-head slab, an angry V-glare, forward fangs and horn fins. */
-function bruteHelmet(H: THREE.Group, b: Batch, c: Ctx) {
+function bruteHelmet(r: Robot, H: THREE.Group, b: Batch, c: Ctx) {
   const put = (g: THREE.BufferGeometry, m: THREE.Material, x = 0, y = 0, z = 0, rot?: V3, scl?: V3) => b.add(H, g, m, x, y, z, rot, scl);
 
   // ---- skull + a wide forehead slab
@@ -479,6 +858,27 @@ function bruteHelmet(H: THREE.Group, b: Batch, c: Ctx) {
     put(plate(glarePts(s, 1.2), 0.03, 0.006), c.dark, x0, 0.02, 0.682);
     put(plate(glarePts(s, 1.0), 0.04, 0.006), c.glow, x0, 0.02, 0.688);
     put(plate(glarePts(s, 0.5, s * 0.03), 0.05, 0.004), c.core, x0, 0.02, 0.694);
+
+    // Ocular Glare Flare
+    const flareGeo = new THREE.PlaneGeometry(0.32, 0.038);
+    const flareMat = new THREE.MeshBasicMaterial({
+      color: c.style.glow,
+      transparent: true,
+      opacity: 0.75,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const flare = new THREE.Mesh(flareGeo, flareMat);
+    flare.position.set(x0, 0.02, 0.706);
+    H.add(flare);
+    r.eyeFlares.push(flare);
+
+    const eyeLight = new THREE.PointLight(c.style.glow, 1.0, 1.3, 2.0);
+    eyeLight.position.set(x0, 0.02, 0.72);
+    H.add(eyeLight);
+    r.eyeLights.push(eyeLight);
+
     put(plate(glareBrow(s), 0.05, 0.01), c.sec, x0, 0.16, 0.672);
     put(plate(glareBrow(s).map(([x, y]): [number, number] => [x * 0.94, y * 0.2 - 0.015]), 0.03, 0.004), c.accent, x0, 0.16, 0.7);
     // side block, vent disc and forward-swept cheek fang
@@ -503,80 +903,156 @@ function bruteHelmet(H: THREE.Group, b: Batch, c: Ctx) {
 function buildArms(r: Robot, b: Batch, c: Ctx, o: Opt) {
   const th = o.th;
   const k = o.fs;
-  const fa = th * (o.variant === 'atom' ? 0.9 : 0.98); // forearm thickness (the tapered profile does the slimming)
+  const fa = th * (o.variant === 'atom' ? 0.88 : 0.94); // athletic forearm taper
+
   for (let i = 0; i < 2; i++) {
     const s = i === 0 ? 1 : -1;
+
+    // =========================== 1. CLAVICLE & SHOULDER PIVOT ===========================
     const clav = new THREE.Group();
-    clav.position.set(s * 0.9, 1.9 - CY, 0);
+    clav.position.set(s * 0.88, 1.9 - CY, 0);
     r.chest.add(clav);
     r.clavs.push(clav);
-    b.add(clav, RB(0.8, 0.28, 0.5, 0.12), c.joint, s * 0.34, 0, 0);
+    b.add(clav, RB(0.68, 0.22, 0.42, 0.08), c.joint, s * 0.3, 0, 0);
 
     const sh = new THREE.Group();
-    sh.position.set(s * 0.82, -0.35, 0);
+    sh.position.set(s * 0.8, -0.32, 0);
     sh.rotation.order = 'YXZ';
     clav.add(sh);
     r.shoulders.push(sh);
 
-    // pauldron: layered dome + rim, rides on the shoulder
+    // =========================== 2. ATHLETIC DELTOID PAULDRON ===========================
+    // Sleek, form-fitting shoulder cap that accentuates the athletic V-taper
     const cap = new THREE.Group();
     cap.position.copy(sh.position);
     clav.add(cap);
     r.caps.push(cap);
-    // three overlapping shells, like the layered shoulder armour on the reference bot
-    b.add(cap, dome(0.6 * th, 0.5), c.main, 0, 0.14, 0, [0, 0, 0], [1, 0.72, 1.12]);
-    b.add(cap, dome(0.64 * th, 0.42), c.sec, 0, 0.02, 0, [0, 0, 0], [1, 0.62, 1.14]);
-    b.add(cap, dome(0.66 * th, 0.34), c.main, 0, -0.12, 0, [0, 0, 0], [1, 0.52, 1.16]);
-    b.add(cap, torus(0.63 * th, 0.035, 32), c.accent, 0, -0.08, 0, [Math.PI / 2, 0, 0], [1, 1.14, 1]);
-    b.add(cap, RB(0.18, 0.05, 0.85, 0.025), c.steel, 0, 0.5 * th + 0.08, 0);
-    b.add(cap, RB(0.035, 0.035, 0.55, 0.014), c.glow, s * 0.13, 0.5 * th + 0.11, 0);
 
-    // ---- athletic upper arm: round deltoid → full biceps/triceps belly → slim at the elbow
-    b.add(sh, sph(0.46 * th), c.joint);
-    b.add(sh, lathe([[0, -1.12], [0.27, -1.12], [0.31, -1.0], [0.4, -0.78], [0.5, -0.5], [0.52, -0.3], [0.46, -0.12], [0.38, -0.02], [0, 0]], th), c.sec);
-    b.add(sh, arcPlate(0.53 * th, 0.6 * th, 1.5, 0.46), c.main, 0, -0.46, 0);
-    b.add(sh, arcPlate(0.5 * th, 0.55 * th, 1.7, 0.06), c.accent, 0, -0.84, 0);
-    // triceps hose + piston on the back of the arm
-    piston(b, c, sh, 0, -0.55, -0.4 * th, 0.9, 0.05);
+    // Main contoured deltoid shell
+    b.add(cap, dome(0.48 * th, 0.5), c.main, 0, 0.08, 0, [0, 0, 0], [1, 0.8, 1.05]);
+    // Secondary striation armor plate
+    b.add(cap, arcPlate(0.48 * th, 0.55 * th, 1.8, 0.36), c.sec, 0, -0.04, 0);
+    // Accent trim & cybernetic light bar
+    b.add(cap, arcPlate(0.5 * th, 0.56 * th, 1.4, 0.06), c.accent, 0, -0.16, 0);
+    b.add(cap, RB(0.028, 0.028, 0.44, 0.01), c.glow, s * 0.1, 0.44 * th + 0.06, 0);
+    // Titanium deltoid spine
+    b.add(cap, RB(0.12, 0.04, 0.68, 0.018), c.steel, 0, 0.44 * th + 0.04, 0);
 
-    // ---- elbow + forearm: thick near the elbow (extensors), tapering to a slim, strong wrist
+    // =========================== 3. BICEPS & TRICEPS (UPPER ARM) ===========================
+    // Shoulder ball joint
+    b.add(sh, sph(0.38 * th), c.joint);
+
+    // Chiseled bicep peak and horseshoe triceps muscular profile
+    b.add(
+      sh,
+      lathe(
+        [
+          [0, -1.12],
+          [0.21, -1.12],
+          [0.25, -1.0],
+          [0.33, -0.78],
+          [0.43, -0.5],
+          [0.45, -0.28],
+          [0.39, -0.1],
+          [0.31, -0.02],
+          [0, 0],
+        ],
+        th,
+      ),
+      c.sec,
+    );
+
+    // Front Bicep Peak Armor Plate
+    b.add(sh, arcPlate(0.44 * th, 0.51 * th, 1.5, 0.46), c.main, 0, -0.46, 0.02);
+    // Lower Bicep Accent Ring
+    b.add(sh, arcPlate(0.42 * th, 0.47 * th, 1.6, 0.05), c.accent, 0, -0.84, 0.01);
+    // Posterior Triceps Horseshoe Shield
+    b.add(sh, arcPlate(0.43 * th, 0.5 * th, 1.4, 0.52), c.dark, 0, -0.5, 0, [0, Math.PI, 0]);
+
+    // Chrome Triceps Hydraulic Cylinder (posterior ram)
+    piston(b, c, sh, 0, -0.54, -0.34 * th, 0.88, 0.042);
+    // Bicep Sinew Tendon (anterior flexor)
+    piston(b, c, sh, s * 0.1 * th, -0.52, 0.2 * th, 0.72, 0.034);
+    // Kinetic Power Vein along bicep groove
+    b.add(sh, RB(0.028, 0.42, 0.028, 0.01), c.glow, s * 0.44 * th, -0.48, 0.0);
+
+    // =========================== 4. ELBOW & FOREARM (TAPERED ATHLETIC BRACER) ===========================
     const el = new THREE.Group();
     el.position.y = -1.1;
     sh.add(el);
     r.elbows.push(el);
-    b.add(el, sph(0.33 * th), c.joint);
-    b.add(el, dome(0.26 * th, 0.5).rotateX(-Math.PI / 2), c.accent, 0, 0.0, -0.26 * th);
-    b.add(el, lathe([[0, -1.3], [0.22, -1.3], [0.26, -1.15], [0.34, -0.88], [0.46, -0.52], [0.52, -0.28], [0.44, -0.08], [0.34, -0.01], [0, 0]], fa), c.sec);
-    // bracer follows the swell of the forearm; ridges give it a tendon / muscle read
-    b.add(el, arcPlate(0.49 * fa, 0.55 * fa, 2.3, 0.54), c.main, 0, -0.52, 0, [0, 0, 0]);
-    b.add(el, RB(0.04, 0.42, 0.04, 0.015), c.glow, s * 0.55 * fa, -0.55, 0.0);
-    b.add(el, arcPlate(0.52 * fa, 0.58 * fa, 2.4, 0.06), c.accent, 0, -0.2, 0);
-    for (let j = -1; j <= 1; j++) b.add(el, RB(0.035, 0.72, 0.035, 0.012), c.steel, j * 0.15 * fa, -0.66, 0.43 * fa, [0.18, 0, 0]);
-    b.add(el, arcPlate(0.29 * fa, 0.35 * fa, 2.4, 0.07), c.steel, 0, -1.1, 0);
-    piston(b, c, el, s * 0.3 * fa, -0.6, 0.4 * fa, 0.8, 0.045);
 
-    // wrist + glove
+    // Precision rotary elbow joint
+    b.add(el, sph(0.28 * th), c.joint);
+    b.add(el, tcyl(0.22 * th, 0.22 * th, 0.08, 20).rotateZ(Math.PI / 2), c.steel, s * 0.28 * th, 0, 0);
+    b.add(el, torus(0.18 * th, 0.022, 18).rotateY(Math.PI / 2), c.accent, s * 0.32 * th, 0, 0);
+    // Olecranon point strike cap (elbow tip)
+    b.add(el, dome(0.22 * th, 0.5).rotateX(-Math.PI / 2), c.accent, 0, 0.0, -0.22 * th);
+
+    // Muscular forearm taper: thick near the elbow (brachioradialis/extensors) -> lean wrist
+    b.add(
+      el,
+      lathe(
+        [
+          [0, -1.3],
+          [0.18, -1.3],
+          [0.21, -1.16],
+          [0.28, -0.88],
+          [0.39, -0.52],
+          [0.44, -0.28],
+          [0.37, -0.08],
+          [0.29, -0.01],
+          [0, 0],
+        ],
+        fa,
+      ),
+      c.sec,
+    );
+
+    // Sculpted athletic bracer plate following muscle swell
+    b.add(el, arcPlate(0.41 * fa, 0.47 * fa, 2.2, 0.52), c.main, 0, -0.52, 0);
+    b.add(el, RB(0.032, 0.4, 0.032, 0.012), c.glow, s * 0.47 * fa, -0.55, 0.0);
+    b.add(el, arcPlate(0.44 * fa, 0.5 * fa, 2.4, 0.06), c.accent, 0, -0.2, 0);
+
+    // Radial flexor tendon rods
+    for (let j = -1; j <= 1; j++) {
+      b.add(el, RB(0.028, 0.65, 0.028, 0.01), c.steel, j * 0.12 * fa, -0.66, 0.36 * fa, [0.16, 0, 0]);
+    }
+    // Lower wrist brace collar
+    b.add(el, arcPlate(0.24 * fa, 0.3 * fa, 2.4, 0.06), c.steel, 0, -1.12, 0);
+    // Radial hydraulic piston
+    piston(b, c, el, s * 0.24 * fa, -0.58, 0.32 * fa, 0.75, 0.038);
+
+    // =========================== 5. WRIST & PRO BOXING GLOVES ===========================
     const wr = new THREE.Group();
     wr.position.y = -1.3;
     el.add(wr);
     r.wrists.push(wr);
+
     const fist = new THREE.Group();
     wr.add(fist);
     r.fists.push(fist);
-    // slim wrist cuff that flares into a compact glove
-    b.add(fist, tcyl(0.34 * k, 0.46 * k, 0.32, 24), c.steel, 0, -0.04, 0);
-    b.add(fist, torus(0.46 * k, 0.03, 30), c.glow, 0, -0.19, 0, [Math.PI / 2, 0, 0]);
-    // glove body (narrower and more compact than before)
-    b.add(fist, RB(1.0 * k, 0.86 * k, 1.0 * k, 0.4 * k), c.dark, 0, -0.64 * k, 0.02);
-    b.add(fist, RB(0.9 * k, 0.5 * k, 0.86 * k, 0.3 * k), c.rubber, 0, -0.9 * k, 0.04);
-    // outer armour plate + stripes
-    b.add(fist, RB(0.1 * k, 0.5 * k, 0.6 * k, 0.05), c.accent, s * 0.58 * k, -0.64 * k, 0.04);
-    b.add(fist, RB(0.7 * k, 0.05, 0.05, 0.02), c.glow, 0, -0.34 * k, 0.5 * k);
-    b.add(fist, RB(0.7 * k, 0.05, 0.05, 0.02), c.glow, 0, -0.34 * k, -0.5 * k);
-    // segmented knuckle guards
-    for (let j = 0; j < 4; j++) b.add(fist, RB(0.25 * k, 0.28 * k, 0.68 * k, 0.09 * k), c.steel, (j - 1.5) * 0.27 * k, -1.04 * k, 0.02);
-    // thumb on the inner side
-    b.add(fist, new THREE.CapsuleGeometry(0.15 * k, 0.34 * k, 6, 12), c.dark, -s * 0.52 * k, -0.76 * k, 0.0, [0, 0, -s * 0.12]);
-    b.add(fist, RB(0.1 * k, 0.1 * k, 0.28 * k, 0.04), c.steel, -s * 0.54 * k, -1.02 * k, 0.0);
+
+    // Tapered athletic wrist cuff (compression fighter tape look)
+    b.add(fist, tcyl(0.26 * k, 0.36 * k, 0.28, 24), c.steel, 0, -0.04, 0);
+    b.add(fist, torus(0.36 * k, 0.025, 28), c.glow, 0, -0.17, 0, [Math.PI / 2, 0, 0]);
+
+    // Compact pro glove body (tight aerodynamic boxer fist)
+    b.add(fist, RB(0.76 * k, 0.78 * k, 0.78 * k, 0.28 * k), c.dark, 0, -0.58 * k, 0.02);
+    b.add(fist, RB(0.72 * k, 0.44 * k, 0.72 * k, 0.22 * k), c.rubber, 0, -0.84 * k, 0.04);
+
+    // Outer impact deflector shield
+    b.add(fist, RB(0.08 * k, 0.44 * k, 0.5 * k, 0.04), c.accent, s * 0.44 * k, -0.58 * k, 0.04);
+    // Glove neon status strips
+    b.add(fist, RB(0.55 * k, 0.04, 0.04, 0.015), c.glow, 0, -0.32 * k, 0.4 * k);
+    b.add(fist, RB(0.55 * k, 0.04, 0.04, 0.015), c.glow, 0, -0.32 * k, -0.4 * k);
+
+    // Segmented athletic knuckle guards (4 contoured boxing knuckles)
+    for (let j = 0; j < 4; j++) {
+      b.add(fist, RB(0.18 * k, 0.24 * k, 0.54 * k, 0.06 * k), c.steel, (j - 1.5) * 0.2 * k, -0.96 * k, 0.02);
+    }
+    // Tucked thumb guard (proper boxing form)
+    b.add(fist, new THREE.CapsuleGeometry(0.12 * k, 0.28 * k, 6, 12), c.dark, -s * 0.42 * k, -0.7 * k, 0.0, [0, 0, -s * 0.12]);
+    b.add(fist, RB(0.08 * k, 0.08 * k, 0.24 * k, 0.03), c.steel, -s * 0.44 * k, -0.92 * k, 0.0);
   }
 }

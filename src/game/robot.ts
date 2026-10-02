@@ -42,6 +42,8 @@ export interface AnimState {
   dash: number; // 1 while a dash / sidestep / backstep is playing
   dashF: number; // dash direction in robot-local space (forward / lateral)
   dashL: number;
+  lookX?: number; // target gaze direction X (-1 to 1)
+  lookY?: number; // target gaze direction Y (-1 to 1)
 }
 
 
@@ -109,6 +111,13 @@ export class Robot {
   readonly kneeCaps: THREE.Group[] = [];
   readonly faulds: THREE.Group[] = [];
   readonly fists: THREE.Object3D[] = [];
+  readonly eyeOptics: THREE.Group[] = [];
+  readonly eyePupils: THREE.Group[] = [];
+  readonly eyeScanners: THREE.Mesh[] = [];
+  readonly eyeFlares: THREE.Mesh[] = [];
+  readonly eyeLights: THREE.PointLight[] = [];
+  private eyeLookX = 0;
+  private eyeLookY = 0;
   private glowMats: THREE.MeshStandardMaterial[] = [];
   private bodyMats: THREE.MeshStandardMaterial[] = [];
   onStep?: (foot: number, speed: number, x: number, z: number) => void;
@@ -238,6 +247,12 @@ export class Robot {
     for (const m of this.glowMats) {
       m.color.setHex(color);
       m.emissive.setHex(color);
+    }
+    for (const f of this.eyeFlares) {
+      if (f.material instanceof THREE.MeshBasicMaterial) f.material.color.setHex(color);
+    }
+    for (const l of this.eyeLights) {
+      l.color.setHex(color);
     }
   }
 
@@ -716,6 +731,65 @@ export class Robot {
     const hz = this.sHeadZ.update(a.hitSign * a.hit * 0.15 - rollA * 0.4, 5, 0.5, dt);
     this.neck.rotation.set(hx * 0.45, hy * 0.5, hz * 0.5);
     this.head.rotation.set(hx * 0.55, hy * 0.5, hz * 0.5);
+
+    // ---------------- ocular motion & eye effects ----------------
+    if (this.eyePupils.length > 0) {
+      // 1. Target gaze tracking: if lookX/lookY provided, track towards target; otherwise autonomous cybernetic saccades
+      const scanPhase = t * 1.5;
+      const saccadeT = t * 2.4;
+      const dartX = (Math.sin(saccadeT * 1.7) > 0.65 ? 0.016 : -0.012) * (Math.sin(saccadeT * 0.7) > 0.15 ? 1 : 0);
+      const wanderX = Math.sin(scanPhase * 0.7) * 0.012 + Math.sin(scanPhase * 1.9) * 0.007;
+      const wanderY = Math.cos(scanPhase * 0.5) * 0.006;
+
+      const targetLookX = (a.lookX ?? 0) * 0.03 + wanderX + dartX;
+      const targetLookY = (a.lookY ?? 0) * 0.018 + wanderY;
+
+      // Spring-damped eye look position
+      this.eyeLookX += (targetLookX - this.eyeLookX) * Math.min(1, 16 * dt);
+      this.eyeLookY += (targetLookY - this.eyeLookY) * Math.min(1, 16 * dt);
+
+      // 2. Scanline sweep: smooth up-and-down laser scan across ocular aperture
+      const scanY = Math.sin(t * 4.5) * 0.035;
+
+      // 3. Neural pulse & micro-blink: breathing pulse + occasional rapid double-blink digital recalibration
+      const blinkCycle = (t * 0.22) % 1; // every ~4.5 seconds
+      let blink = 1.0;
+      if (blinkCycle < 0.035) {
+        // Quick optical shutter blink
+        blink = Math.max(0.08, Math.sin((blinkCycle / 0.035) * Math.PI));
+      } else if (blinkCycle > 0.055 && blinkCycle < 0.085) {
+        // Rapid double-blink pulse
+        blink = Math.max(0.12, Math.sin(((blinkCycle - 0.055) / 0.03) * Math.PI));
+      }
+
+      const flareScaleX = (1.0 + Math.sin(t * 5.5) * 0.22 + Math.abs(this.eyeLookX) * 10) * blink;
+      const flareOpacity = clamp(0.45 + Math.sin(t * 4.8) * 0.25 + a.glow * 0.25, 0.2, 1.0) * blink;
+
+      for (let i = 0; i < this.eyePupils.length; i++) {
+        const pupil = this.eyePupils[i];
+        pupil.position.x = this.eyeLookX;
+        pupil.position.y = this.eyeLookY;
+        pupil.scale.set(1.0, blink, 1.0);
+      }
+
+      for (let i = 0; i < this.eyeScanners.length; i++) {
+        const scanner = this.eyeScanners[i];
+        scanner.position.y = scanY;
+        scanner.scale.set(0.9 + Math.sin(t * 8) * 0.1, 1.0, 1.0);
+      }
+
+      for (let i = 0; i < this.eyeFlares.length; i++) {
+        const flare = this.eyeFlares[i];
+        flare.scale.set(flareScaleX, blink, 1.0);
+        if (flare.material instanceof THREE.MeshBasicMaterial) {
+          flare.material.opacity = flareOpacity;
+        }
+      }
+
+      for (let i = 0; i < this.eyeLights.length; i++) {
+        this.eyeLights[i].intensity = (1.2 + Math.sin(t * 3.8) * 0.4 + a.glow * 0.4) * blink;
+      }
+    }
 
     // ---------------- arms ----------------
     for (let i = 0; i < 2; i++) {

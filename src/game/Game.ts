@@ -165,6 +165,8 @@ export interface HudState {
   ePlan: string; // the strategist's current game plan, '' when not in strategist mode
   roll: number; // Dempsey-roll charge 0..1
   ippo: boolean; // the peek-a-boo stance is active
+  heroPose?: 'stand' | 'guard' | 'victory' | 'taunt';
+  menuCamMode?: 'hero' | 'arena';
 }
 
 type MoveId = 'jab' | 'cross' | 'hook' | 'upper' | 'slam' | 'bolt' | 'grab';
@@ -197,6 +199,30 @@ interface Move {
   step: number;
   kind: 'front' | 'side' | 'up';
   keys: Key[];
+}
+
+function createCinematicVignetteTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024;
+  canvas.height = 1024;
+  const ctx = canvas.getContext('2d')!;
+
+  // Smooth cinematic radial vignette:
+  // Center is translucent dark blue-black so background arena fight is clearly visible,
+  // then seamlessly falls off to deep atmospheric black at outer edges.
+  const grad = ctx.createRadialGradient(512, 512, 140, 512, 512, 512);
+  grad.addColorStop(0, 'rgba(2, 5, 14, 0.52)');
+  grad.addColorStop(0.42, 'rgba(2, 5, 14, 0.68)');
+  grad.addColorStop(0.72, 'rgba(1, 3, 10, 0.90)');
+  grad.addColorStop(1, 'rgba(0, 1, 5, 0.99)');
+
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 1024, 1024);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
 }
 
 const GUARD: Pose = { sx: -0.72, sy: -0.5, sz: 0.04, ex: -2.0 };
@@ -641,6 +667,20 @@ export class Game {
 
   private ai = this.makeAi();
 
+  // Foreground Hero Robot in main menu (standing front view)
+  private menuHero: Robot;
+  private menuHeroPedestal: THREE.Group;
+  private menuHeroSpot: THREE.SpotLight;
+  private menuHeroRim: THREE.SpotLight;
+  private menuHeroFill: THREE.PointLight;
+  private menuScrimPlane: THREE.Mesh;
+  private heroPose: 'stand' | 'guard' | 'victory' | 'taunt' = 'stand';
+  private heroYaw = 0;
+  private heroYawTarget = 0;
+  private heroMouseX = 0;
+  private heroMouseY = 0;
+  private menuCamMode: 'hero' | 'arena' = 'hero';
+
   constructor(container: HTMLElement, onHud: (h: HudState) => void) {
     this.container = container;
     this.onHud = onHud;
@@ -669,6 +709,68 @@ export class Game {
     this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.1, 0.35, 1.6);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
+
+    // Foreground menu hero robot (standing front view on illuminated platform)
+    this.menuHero = new Robot(PLAYER_STYLE, 1.0);
+    this.scene.add(this.menuHero.root);
+
+    this.menuHeroPedestal = new THREE.Group();
+    const platGeo = new THREE.CylinderGeometry(2.3, 2.4, 0.12, 32);
+    const platMat = new THREE.MeshStandardMaterial({
+      color: 0x141a26,
+      metalness: 0.85,
+      roughness: 0.25,
+    });
+    const platMesh = new THREE.Mesh(platGeo, platMat);
+    platMesh.position.y = 0.06;
+    platMesh.receiveShadow = true;
+    this.menuHeroPedestal.add(platMesh);
+
+    const ringGeo = new THREE.RingGeometry(2.05, 2.25, 32);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0x3fd8ff,
+      side: THREE.DoubleSide,
+    });
+    const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+    ringMesh.rotation.x = -Math.PI / 2;
+    ringMesh.position.y = 0.125;
+    this.menuHeroPedestal.add(ringMesh);
+
+    const innerRingGeo = new THREE.RingGeometry(1.2, 1.25, 32);
+    const innerRingMat = new THREE.MeshBasicMaterial({
+      color: 0x1f66ff,
+      side: THREE.DoubleSide,
+    });
+    const innerRingMesh = new THREE.Mesh(innerRingGeo, innerRingMat);
+    innerRingMesh.rotation.x = -Math.PI / 2;
+    innerRingMesh.position.y = 0.126;
+    this.menuHeroPedestal.add(innerRingMesh);
+    this.scene.add(this.menuHeroPedestal);
+
+    this.menuHeroSpot = new THREE.SpotLight(0xd8eeff, 4.2, 30, Math.PI / 3.2, 0.35, 1.0);
+    this.menuHeroSpot.castShadow = true;
+    this.scene.add(this.menuHeroSpot);
+    this.scene.add(this.menuHeroSpot.target);
+
+    this.menuHeroRim = new THREE.SpotLight(0x3fd8ff, 3.2, 25, Math.PI / 3, 0.45, 1.0);
+    this.scene.add(this.menuHeroRim);
+    this.scene.add(this.menuHeroRim.target);
+
+    this.menuHeroFill = new THREE.PointLight(0x60b0ff, 2.0, 12, 1.2);
+    this.scene.add(this.menuHeroFill);
+
+    // Darkening Scrim Plane with Cinematic Vignette: placed between hero (z=6.0) and background ring (z<=0)
+    // Applies a rich cinematic radial vignette solely to the background gameplay arena without darkening the front hero!
+    const scrimGeo = new THREE.PlaneGeometry(120, 70);
+    const scrimTex = createCinematicVignetteTexture();
+    const scrimMat = new THREE.MeshBasicMaterial({
+      map: scrimTex,
+      transparent: true,
+      depthWrite: false,
+    });
+    this.menuScrimPlane = new THREE.Mesh(scrimGeo, scrimMat);
+    this.menuScrimPlane.position.set(0, 4.5, 3.0);
+    this.scene.add(this.menuScrimPlane);
 
     // DOM layers
     this.popupLayer = document.createElement('div');
@@ -845,6 +947,18 @@ export class Game {
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onBlur);
     this.sfx.stopMusic();
+    if (this.menuHero) {
+      this.scene.remove(this.menuHero.root);
+      this.scene.remove(this.menuHeroPedestal);
+      this.scene.remove(this.menuHeroSpot);
+      this.scene.remove(this.menuHeroRim);
+      this.scene.remove(this.menuHeroFill);
+      this.scene.remove(this.menuScrimPlane);
+      this.menuScrimPlane.geometry.dispose();
+      const mat = this.menuScrimPlane.material as THREE.MeshBasicMaterial;
+      mat.map?.dispose();
+      mat.dispose();
+    }
     this.renderer.dispose();
     this.renderer.forceContextLoss();
     this.container.innerHTML = '';
@@ -852,6 +966,14 @@ export class Game {
 
   // ------------------------------------------------------------ public api
   startMatch(idx: number) {
+    if (this.menuHero) {
+      this.menuHero.root.visible = false;
+      this.menuHeroPedestal.visible = false;
+      this.menuHeroSpot.visible = false;
+      this.menuHeroRim.visible = false;
+      this.menuHeroFill.visible = false;
+      this.menuScrimPlane.visible = false;
+    }
     this.sfx.init();
     this.sfx.startMusic();
     this.sfx.click();
@@ -877,14 +999,64 @@ export class Game {
     this.paused = false;
     this.round = 1;
     this.wins = [0, 0];
+    if (this.menuHero) {
+      this.menuHero.root.visible = true;
+      this.menuHeroPedestal.visible = false;
+      this.menuHeroSpot.visible = true;
+      this.menuHeroRim.visible = true;
+      this.menuHeroFill.visible = true;
+      this.menuScrimPlane.visible = true;
+      this.heroPose = 'stand';
+      this.heroYaw = 0;
+      this.heroYawTarget = 0;
+      this.menuCamMode = 'hero';
+    }
     this.placeMenu();
     this.sfx.musicIntensity = 0.7;
+    this.emitHud(true);
+  }
+
+  setHeroPose(pose: 'stand' | 'guard' | 'victory' | 'taunt') {
+    if (this.heroPose === pose) return;
+    this.heroPose = pose;
+    this.sfx.init();
+    this.sfx.click();
+    this.emitHud(true);
+  }
+
+  getHeroPose() {
+    return this.heroPose;
+  }
+
+  setMenuCamMode(mode: 'hero' | 'arena') {
+    if (this.menuCamMode === mode) return;
+    this.menuCamMode = mode;
+    this.sfx.init();
+    this.sfx.click();
+    this.emitHud(true);
+  }
+
+  getMenuCamMode() {
+    return this.menuCamMode;
+  }
+
+  rotateHero(deltaYaw: number) {
+    this.heroYawTarget += deltaYaw;
+  }
+
+  resetHeroRotation() {
+    this.heroYawTarget = 0;
+  }
+
+  setHeroMouse(nx: number, ny: number) {
+    this.heroMouseX = nx;
+    this.heroMouseY = ny;
   }
 
   private placeMenu() {
     // square them up for the demo reel: they fight for real in the menu background
-    this.player.reset(-1.8, 2.6, Math.atan2(3.6, -5.2));
-    this.enemy.reset(1.8, -2.6, Math.atan2(-3.6, 5.2));
+    this.player.reset(-2.0, -1.8, Math.atan2(4.0, -2.4));
+    this.enemy.reset(2.0, -4.2, Math.atan2(-4.0, 2.4));
     this.player.mode = 'normal';
     this.enemy.mode = 'normal';
     this.player.glowBoost = 0.6;
@@ -894,6 +1066,15 @@ export class Game {
     this.shot = nextShot();
     this.shotT = 0;
     this.shotCut = true;
+    if (this.menuHero) {
+      const showHero = this.menuCamMode === 'hero';
+      this.menuHero.root.visible = showHero;
+      this.menuHeroPedestal.visible = false;
+      this.menuHeroSpot.visible = showHero;
+      this.menuHeroRim.visible = showHero;
+      this.menuHeroFill.visible = showHero;
+      this.menuScrimPlane.visible = showHero;
+    }
   }
 
   togglePause() {
@@ -1165,6 +1346,13 @@ export class Game {
         dt = 0;
       }
       this.time += raw;
+      if (this.phase === 'menu') {
+        this.trauma = 0;
+        this.camBump = 0;
+        this.camPush = 0;
+        this.fovKick = 0;
+        this.flashAmt = 0;
+      }
       if (dt > 0) this.simulate(dt);
       this.updateAnimations(dt);
       if (this.freeze > 0 && this.frozenFighter) {
@@ -2658,30 +2846,32 @@ export class Game {
     this.fx.ring(d.pos.x, d.pos.y, 0xffffff, 2 + big * 3, 0.25, 0.1);
     this.sfx.hit(big);
     this.sfx.cheer(0.3 + big * 0.7);
-    if (d.isPlayer) {
-      this.flashAmt = Math.min(1, 0.35 + big * 0.5);
-      this.flashEl.style.background = 'radial-gradient(ellipse at center, rgba(255,40,20,0) 35%, rgba(255,30,20,0.85) 100%)';
-      this.combo = 0;
-    } else {
-      this.flashEl.style.background = 'radial-gradient(ellipse at center, rgba(255,255,255,0.0) 45%, rgba(255,255,255,0.3) 100%)';
-      this.flashAmt = Math.max(this.flashAmt, 0.12 + big * 0.35);
-      this.combo++;
-      this.comboT = 2.3;
+    if (this.phase !== 'menu') {
+      if (d.isPlayer) {
+        this.flashAmt = Math.min(1, 0.35 + big * 0.5);
+        this.flashEl.style.background = 'radial-gradient(ellipse at center, rgba(255,40,20,0) 35%, rgba(255,30,20,0.85) 100%)';
+        this.combo = 0;
+      } else {
+        this.flashEl.style.background = 'radial-gradient(ellipse at center, rgba(255,255,255,0.0) 45%, rgba(255,255,255,0.3) 100%)';
+        this.flashAmt = Math.max(this.flashAmt, 0.12 + big * 0.35);
+        this.combo++;
+        this.comboT = 2.3;
+      }
+      if (launched && !isOD(m.id)) {
+        this.slowT = Math.max(this.slowT, 0.3);
+        this.slowScale = 0.45;
+        this.fovKick = -10;
+      }
+      if (isOD(m.id)) {
+        this.slowT = 0.9;
+        this.slowScale = 0.25;
+        this.flashEl.style.background = 'radial-gradient(ellipse at center, rgba(255,230,180,0.25) 0%, rgba(255,200,120,0.55) 100%)';
+        this.flashAmt = 1;
+      }
+      this.popup(hitPos, Math.round(dmg).toString(), big >= 0.6 ? 'pop-big' : 'pop-dmg');
+      if (label) this.popup(new THREE.Vector3(hitPos.x, hitPos.y + 1.4, hitPos.z), label, 'pop-crit');
+      if (a.isPlayer && this.combo >= 3) this.popup(new THREE.Vector3(a.pos.x, 6.3, a.pos.y), `${this.combo} HIT COMBO`, 'pop-info');
     }
-    if (launched && !isOD(m.id)) {
-      this.slowT = Math.max(this.slowT, 0.3);
-      this.slowScale = 0.45;
-      this.fovKick = -10;
-    }
-    if (isOD(m.id)) {
-      this.slowT = 0.9;
-      this.slowScale = 0.25;
-      this.flashEl.style.background = 'radial-gradient(ellipse at center, rgba(255,230,180,0.25) 0%, rgba(255,200,120,0.55) 100%)';
-      this.flashAmt = 1;
-    }
-    this.popup(hitPos, Math.round(dmg).toString(), big >= 0.6 ? 'pop-big' : 'pop-dmg');
-    if (label) this.popup(new THREE.Vector3(hitPos.x, hitPos.y + 1.4, hitPos.z), label, 'pop-crit');
-    if (a.isPlayer && this.combo >= 3) this.popup(new THREE.Vector3(a.pos.x, 6.3, a.pos.y), `${this.combo} HIT COMBO`, 'pop-info');
 
     if (d.hp <= 0) this.knockout(d, a);
   }
@@ -2715,6 +2905,87 @@ export class Game {
   // ------------------------------------------------------------ animation
   private updateAnimations(dt: number) {
     for (const f of [this.player, this.enemy]) this.animateFighter(f, f === this.player ? this.enemy : this.player, dt);
+    if (this.phase === 'menu') {
+      this.animateMenuHero(dt > 0 ? dt : 0.016);
+    }
+  }
+
+  private animateMenuHero(dt: number) {
+    if (!this.menuHero || this.phase !== 'menu') return;
+    const t = this.time;
+    let a0: Pose;
+    let a1: Pose;
+    let dp = 0.12;
+    let tw = Math.sin(t * 0.8) * 0.02 + this.heroMouseX * 0.08;
+    let ln = 0.03 + this.heroMouseY * 0.04;
+    let rl = Math.sin(t * 1.2) * 0.015;
+
+    switch (this.heroPose) {
+      case 'guard': {
+        const sw = Math.sin(t * 3.2) * 0.03;
+        a0 = { sx: -0.74 + sw, sy: -0.45, sz: 0.06, ex: -1.98 };
+        a1 = { sx: -0.74 - sw, sy: 0.45, sz: 0.06, ex: -1.98 };
+        dp = 0.14 + Math.abs(Math.sin(t * 3.5)) * 0.04;
+        break;
+      }
+      case 'victory': {
+        const pump = Math.sin(t * 3.5) * 0.08;
+        a0 = { sx: -2.85 + pump, sy: -0.08, sz: 0.52, ex: -0.38 };
+        a1 = { sx: -2.85 + pump, sy: 0.08, sz: 0.52, ex: -0.38 };
+        ln = -0.08;
+        dp = 0.08;
+        break;
+      }
+      case 'taunt': {
+        const p = Math.sin(t * 4.5) * 0.5 + 0.5;
+        a0 = { sx: -0.4 - p * 0.42, sy: -0.18, sz: 1.1, ex: -2.1 + p * 0.4 };
+        a1 = { sx: -0.4 - p * 0.42, sy: 0.18, sz: 1.1, ex: -2.1 + p * 0.4 };
+        dp = 0.14 + p * 0.03;
+        break;
+      }
+      case 'stand':
+      default: {
+        const breath = Math.sin(t * 1.8) * 0.025;
+        a0 = { sx: 0.06 + breath, sy: 0.03, sz: 0.28, ex: -0.42 - breath * 2 };
+        a1 = { sx: 0.06 + breath, sy: -0.03, sz: 0.28, ex: -0.42 - breath * 2 };
+        dp = 0.11 + breath * 0.8;
+        break;
+      }
+    }
+
+    this.heroYaw += (this.heroYawTarget - this.heroYaw) * Math.min(1, 10 * dt);
+    this.menuHero.root.rotation.y = this.heroYaw;
+
+    this.menuHero.animate(
+      {
+        arms: [a0, a1],
+        twist: tw,
+        lean: ln,
+        lunge: 0,
+        dip: dp,
+        roll: rl,
+        vf: 0,
+        vl: 0,
+        af: 0,
+        al: 0,
+        yawRate: 0,
+        air: 0,
+        hit: 0,
+        hitSign: 1,
+        hitUp: 0,
+        fall: 0,
+        time: t,
+        glow: 1.25 + Math.sin(t * 2.5) * 0.35,
+        flash: 0,
+        tilt: 0,
+        dash: 0,
+        dashF: 0,
+        dashL: 0,
+        lookX: this.heroMouseX,
+        lookY: this.heroMouseY,
+      },
+      dt,
+    );
   }
 
   private animateFighter(f: Fighter, o: Fighter, dt: number) {
@@ -2935,6 +3206,8 @@ export class Game {
         dash: f.dodgeT > 0 && f.state === 'idle' ? 1 : 0,
         dashF: f.dodgeDir.x * sy + f.dodgeDir.y * cy,
         dashL: f.dodgeDir.x * cy - f.dodgeDir.y * sy,
+        lookX: THREE.MathUtils.clamp((o.pos.x - f.pos.x) * cy - (o.pos.y - f.pos.y) * sy, -1, 1),
+        lookY: THREE.MathUtils.clamp((o.y - f.y) * 0.4, -1, 1),
       },
       dt,
     );
@@ -2979,24 +3252,69 @@ export class Game {
     const t = this.time;
 
     if (this.phase === 'menu') {
-      // ---- ATTRACT MODE: a director cuts between cinematic shots of the demo fight ----
-      this.shotT += raw;
-      if (this.shotT >= this.shot.dur) {
-        this.shot = nextShot(this.shot);
-        this.shotT = 0;
-        this.shotCut = true; // hard cut
-      }
-      const u = Math.min(1, this.shotT / this.shot.dur);
-      const a3 = new THREE.Vector3(p.pos.x, 0, p.pos.y);
-      const b3 = new THREE.Vector3(e.pos.x, 0, e.pos.y);
-      // on a wide screen the menu panel covers the left ~560 px, so push the action right
       const wide = this.container.clientWidth >= 1024;
-      const sc = shotCamera(this.shot, u, t, a3, b3, wide ? 3.6 : 0.8);
-      tp = sc.pos;
-      tl = sc.look;
-      direct = this.shotCut;
-      this.shotCut = false;
-      this.camRoll = this.shot.roll; // the lens (fov) is applied at the end of this method
+      const aspect = this.container.clientWidth / Math.max(1, this.container.clientHeight);
+      const heroX = wide ? 0.40 : 0.0;
+      const heroZ = 6.0;
+      const camCenterY = 4.50;
+
+      if (this.menuHero) {
+        const showHero = this.menuCamMode === 'hero';
+        this.menuHero.root.visible = showHero;
+        this.menuHeroPedestal.visible = false; // cropped out
+        this.menuHeroSpot.visible = showHero;
+        this.menuHeroRim.visible = showHero;
+        this.menuHeroFill.visible = showHero;
+        this.menuScrimPlane.visible = showHero;
+        this.menuHero.root.position.set(heroX, 0, heroZ);
+        this.menuHeroSpot.position.set(heroX + 1.2, 8.2, heroZ + 4.0);
+        this.menuHeroSpot.target.position.set(heroX, camCenterY, heroZ);
+        this.menuHeroRim.position.set(heroX - 3.0, 6.5, heroZ - 2.0);
+        this.menuHeroRim.target.position.set(heroX, camCenterY, heroZ);
+        this.menuHeroFill.position.set(heroX, camCenterY, heroZ + 3.2);
+        this.menuScrimPlane.position.set(0, camCenterY, 3.0);
+      }
+
+      if (this.menuCamMode === 'hero') {
+        // Hero Front-View Showcase (Head down to Thighs, perfectly fit within camera screen, ZERO screenshake!)
+        this.trauma = 0;
+        this.camBump = 0;
+        this.camPush = 0;
+        this.camRoll = 0;
+        this.fovKick = 0;
+
+        // At fov 38°, tan(19°) = 0.3443. Distance 9.25 units covers 6.37 vertical units.
+        // Helmet top is at y = 6.75 (generous 0.93 margin below top header bar).
+        // Thighs and knees are at y = 1.85-3.60 (generous 0.53 margin above bottom dock).
+        // Both head and thighs are 100% visible inside the camera screen without clipping.
+        const distScale = aspect < 0.75 ? Math.min(1.25, 0.75 / aspect) : 1.0;
+        const camDist = 9.25 * distScale;
+
+        const camX = heroX;
+        const camY = camCenterY;
+        const camZ = heroZ + camDist;
+        tp = new THREE.Vector3(camX, camY, camZ);
+        tl = new THREE.Vector3(heroX, camCenterY, heroZ);
+        direct = true;
+        this.camRoll = 0;
+      } else {
+        // Arena Action Camera: director cuts between cinematic shots of the demo fight
+        this.shotT += raw;
+        if (this.shotT >= this.shot.dur) {
+          this.shot = nextShot(this.shot);
+          this.shotT = 0;
+          this.shotCut = true; // hard cut
+        }
+        const u = Math.min(1, this.shotT / this.shot.dur);
+        const a3 = new THREE.Vector3(p.pos.x, 0, p.pos.y);
+        const b3 = new THREE.Vector3(e.pos.x, 0, e.pos.y);
+        const sc = shotCamera(this.shot, u, t, a3, b3, wide ? 3.6 : 0.8);
+        tp = sc.pos;
+        tl = sc.look;
+        direct = this.shotCut;
+        this.shotCut = false;
+        this.camRoll = this.shot.roll; // the lens (fov) is applied at the end of this method
+      }
     } else if (this.phase === 'matchEnd') {
       const ang = t * 0.22;
       const winner = this.result === 'win' ? p : e;
@@ -3036,28 +3354,37 @@ export class Game {
     }
 
     cam.position.copy(this.camPos);
-    this.camPush *= Math.exp(-8 * raw);
-    this.camBump *= Math.exp(-9 * raw);
-    this.camRoll *= Math.exp(-7 * raw);
-    if (this.camPush > 0.001) {
-      const dirv = this.camLook.clone().sub(cam.position).normalize();
-      cam.position.addScaledVector(dirv, Math.min(0.9, this.camPush));
+    if (this.phase !== 'menu' || this.menuCamMode !== 'hero') {
+      this.camPush *= Math.exp(-8 * raw);
+      this.camBump *= Math.exp(-9 * raw);
+      this.camRoll *= Math.exp(-7 * raw);
+      if (this.camPush > 0.001) {
+        const dirv = this.camLook.clone().sub(cam.position).normalize();
+        cam.position.addScaledVector(dirv, Math.min(0.9, this.camPush));
+      }
+      cam.position.y -= this.camBump;
+      const s = this.trauma * this.trauma;
+      if (s > 0.0005) {
+        cam.position.x += Math.sin(t * 61) * s * 0.55;
+        cam.position.y += Math.sin(t * 73 + 1) * s * 0.45;
+        cam.position.z += Math.sin(t * 53 + 2) * s * 0.55;
+      }
+      cam.lookAt(this.camLook);
+      if (s > 0.0005) {
+        cam.rotateZ(Math.sin(t * 47) * s * 0.06);
+        cam.rotateX(Math.sin(t * 59) * s * 0.03);
+      }
+      cam.rotateZ(this.camRoll);
+    } else {
+      // In menu hero mode: ZERO shake, rock-solid lookAt!
+      this.camPush = 0;
+      this.camBump = 0;
+      this.camRoll = 0;
+      this.trauma = 0;
+      cam.lookAt(this.camLook);
     }
-    cam.position.y -= this.camBump;
-    const s = this.trauma * this.trauma;
-    if (s > 0.0005) {
-      cam.position.x += Math.sin(t * 61) * s * 0.55;
-      cam.position.y += Math.sin(t * 73 + 1) * s * 0.45;
-      cam.position.z += Math.sin(t * 53 + 2) * s * 0.55;
-    }
-    cam.lookAt(this.camLook);
-    if (s > 0.0005) {
-      cam.rotateZ(Math.sin(t * 47) * s * 0.06);
-      cam.rotateX(Math.sin(t * 59) * s * 0.03);
-    }
-    cam.rotateZ(this.camRoll);
     this.runFov += ((this.player.sprinting ? 4 : 0) - this.runFov) * (1 - Math.exp(-4 * raw));
-    cam.fov = (this.phase === 'menu' ? this.shot.fov : 58) + this.fovKick + this.runFov;
+    cam.fov = (this.phase === 'menu' ? (this.menuCamMode === 'hero' ? 38 : this.shot.fov) : 58) + this.fovKick + this.runFov;
     cam.updateProjectionMatrix();
     this.bloom.strength = 0.1 + this.trauma * 0.08 + this.flashAmt * 0.05;
   }
@@ -3106,6 +3433,8 @@ export class Game {
       ePlan: this.iq >= STRATEGIST && this.phase === 'fight' ? PLAN_LABEL[this.ai.plan] : '',
       roll: this.player.rollCharge,
       ippo: this.player.ippo,
+      heroPose: this.heroPose,
+      menuCamMode: this.menuCamMode,
     });
   }
 }

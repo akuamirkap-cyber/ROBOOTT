@@ -98,7 +98,7 @@ export default function App() {
   return (
     <div className="relative h-full w-full overflow-hidden bg-black">
       <div ref={mount} className="absolute inset-0" />
-      <div className="vignette" />
+      {inMatch && <div className="vignette" />}
 
       {hud && inMatch && <Hud h={hud} touch={touch} />}
       {inMatch && touch && phase === 'fight' && <TouchControls game={game} />}
@@ -120,6 +120,8 @@ export default function App() {
           onFw={pickFw}
           iq={iqNow}
           onIq={pickIq}
+          game={game}
+          hud={hud}
         />
       )}
 

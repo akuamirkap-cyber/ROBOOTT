@@ -5,7 +5,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { Robot, type Pose, type RobotStyle } from './robot';
-import { FREESTYLE, freestyleByKey, freestylePose, riseArms } from './poses';
+import { FREESTYLE, freestyleByKey, freestylePose, getupFoot, riseArms } from './poses';
 import { buildArena, type Arena } from './arena';
 import { Effects, Trail } from './fx';
 import { Decap } from './decap';
@@ -353,19 +353,22 @@ const MOVES: Record<MoveId, Move> = {
       k(1.25, GUARD),
     ],
   },
-  // COUNTER STANCE: a short catch-and-riposte. While the parry window is open (PARRY_ACTIVE) an incoming strike
-  // is caught instead of landing, time slows down and the straight fires back instantly with the COUNTER bonus.
-  // Thrown with no timing at all it is just a weak straight — the reward is in the read, not in the spam.
+  // COUNTER STRAIGHT (L) — half an Overdrive. A long, lunging straight down the same line the Overdrive throws,
+  // with half the Overdrive's power (16 vs 32 damage, power 0.5, half the knockback). It is meant to be chained
+  // out of your own punches (H/J/K → L) and to punish a whiff or a blocked move.
+  // The first frames are still a read: an incoming strike that lands inside the (short) parry window is CAUGHT —
+  // then the straight fires instantly with the 1.6× COUNTER bonus. And it stays a normal strike: it can be
+  // blocked, sidestepped and dodged like any other straight (the AI reads it and steps off the line).
   counter: {
-    id: 'counter', arm: 1, dur: 1.0, strikeAt: 0.46, impact: 0.58, cancel: 0.72, dmg: 9, reach: 4.3, cost: 12, stun: 0.6, knock: 5, blockMul: 0.25, power: 0.5, hitY: 4.3, step: 1.5, kind: 'front',
+    id: 'counter', arm: 1, dur: 0.95, strikeAt: 0.3, impact: 0.4, cancel: 0.6, dmg: 16, reach: 4.6, cost: 10, stun: 0.7, knock: 7, blockMul: 0.3, power: 0.5, hitY: 4.3, step: 2.6, kind: 'front',
     keys: [
       k(0, GUARD),
-      k(0.12, P(-0.52, -0.12, 0.42, -2.45), -0.34, -0.06, -0.3, 0.3, 'out'),
-      k(0.34, P(-0.6, -0.16, 0.5, -2.4), -0.42, -0.02, -0.26, 0.34), // held parry stance (catch here)
-      k(0.46, P(-0.4, 0.55, 0.34, -2.35), -0.5, -0.12, -0.42, 0.3, 'out'), // load the riposte
-      k(0.58, P(-1.62, -0.8, 0, -0.06), 0.95, 0.38, 0.9, 0.06, 'in'), // the counter straight
-      k(0.74, P(-1.62, -0.8, 0, -0.06), 0.95, 0.38, 0.9, 0.06),
-      k(1.0, GUARD),
+      k(0.08, P(-0.44, -0.2, 0.42, -2.5), -0.5, -0.1, -0.28, 0.28, 'out'), // hands up, weight back (the catch)
+      k(0.18, P(-0.3, 0.92, 0.42, -2.55), -1.0, -0.22, -0.55, 0.42, 'io'), // load the straight all the way back
+      k(0.3, P(-1.66, -0.92, 0, -0.02), 1.3, 0.54, 1.5, 0.09, 'in'), // the long straight (the Overdrive's line)
+      k(0.42, P(-1.7, -0.9, 0, 0.02), 1.42, 0.56, 1.56, 0.06), // the rotation keeps travelling past it
+      k(0.62, P(-1.1, -0.5, 0.14, -0.95), 0.3, 0.2, 0.45, 0.15), // recoil
+      k(0.95, GUARD),
     ],
   },
 };
@@ -407,11 +410,13 @@ const UNBLOCKABLE: MoveId[] = ['grab', 'slam', 'bolt']; // shown with a RED indi
 const TRACK: Record<MoveId, number> = { jab: 0.2, cross: 0.25, hook: 0.85, upper: 0.4, slam: 0.4, bolt: 0.18, grab: 0.4, counter: 0.3 };
 
 /**
- * COUNTER STANCE (L). For this long after pressing L the player is *catching*: any strike that reaches him inside
- * the window is parried — no damage, the attacker is knocked out of the swing, time slows down and his own
- * counter-straight fires back instantly with the 1.6× COUNTER bonus. Outside the window L is just a weak straight.
+ * COUNTER STRAIGHT (L). L is a punch — a lunging straight on the Overdrive's line at half its power, made to be
+ * chained out of your own jab/cross/hook. On top of that, the first frames are a short read: a strike that reaches
+ * the player inside this window is *caught* — no damage, the attacker is knocked out of the swing, time slows down
+ * and the straight fires immediately with the 1.6× COUNTER bonus. The window is short because the move is now a
+ * real strike that has to come out fast; you have to already be throwing it when the punch arrives.
  */
-const PARRY_ACTIVE = 0.44;
+const PARRY_ACTIVE = 0.3; // = the move's strikeAt: the whole wind-up is the catch window
 
 /**
  * WHERE YOU AIM. A tap on SPACE (or T) switches the point of impact between the HEAD and the BODY, and every
@@ -555,13 +560,13 @@ class Fighter {
   riseDir = 1; // the shoulder he rolls onto and pushes off
   riseOut = 0; // 1 → 0 over the beat after he stands (the loose settle)
   riseSteps = 0; // how many of the two re-plants have fired
-  downDur = 1.8; // total time on the floor, get-up included
+  downDur = 2.0; // total time on the floor, get-up included
   poise = POISE_MAX; // stability: how much punishment is left before a normal punch can knock you down
   poiseT = 0; // delay before the poise starts refilling
   poiseMax = POISE_MAX;
   hand: 0 | 1 = 0; // PLAYER: which fist the next strike is thrown with (0 = left, 1 = right) — set by the last step
   handT = 0; // how long the "hand switched" flash stays up (HUD)
-  counterCd = 0; // PLAYER: cooldown before the counter stance can be taken again (mashing it would be a turtling exploit)
+  counterCd = 0; // PLAYER: cooldown before the counter straight can be thrown again (it is a hard puncher, so no spam)
   aim: 0 | 1 = 0; // 0 = the HEAD is the target, 1 = the BODY — every punch aims there (pose, impact point, damage)
   aimT = 0; // how long the "target switched" flash stays up (HUD)
   dodgeWinT = 0; // DODGE ADVANTAGE: time left in which the next strike is faster & heavier (after a dodge)
@@ -1388,7 +1393,10 @@ export class Game {
       case 'KeyU':
       case 'KeyI':
       case 'KeyY':
-      case 'KeyO': {
+      case 'KeyO':
+      case 'Digit1':
+      case 'Digit2':
+      case 'Digit3': {
         const fs = freestyleByKey(code);
         if (fs) this.taunt(p, fs.id);
         break;
@@ -1840,6 +1848,12 @@ export class Game {
         return 'Hear that?';
       case 6:
         return 'Engine hot.';
+      case 7:
+        return 'Diagnostics complete.';
+      case 8:
+        return 'Feel the core.';
+      case 9:
+        return 'Spin cycle.';
       default:
         return 'Is that all?';
     }
@@ -1908,6 +1922,32 @@ export class Game {
         f.glowBoost = Math.max(f.glowBoost, 3);
         for (const sx of [1, -1]) this.fx.spark(at(sx * 0.7, 2.6, -0.2), 9, 4, 0xffb45a, new THREE.Vector3(0, -0.3, 0), 0.7, 0.4, 6);
         if (f.isPlayer) this.trauma = Math.min(1, this.trauma + 0.12);
+        break;
+      }
+      case 'check': {
+        // SERVO CHECK: a joint snapping to its station — one hard servo tick, one spark off the fist
+        this.sfx.tick(1);
+        this.sfx.servo();
+        const side = s === 'check' ? (f.hand === 1 ? 1 : -1) : 1;
+        this.fx.spark(at(side * 1.1, 4.4, 0.6), 6, 3, 0xbfe6ff, new THREE.Vector3(0, 0.3, 0.5), 0.5, 0.3, 4);
+        break;
+      }
+      case 'charge': {
+        // CORE OVERLOAD: the reactor winds up — the chest lights climb and the plates start throwing arcs
+        this.sfx.charge();
+        this.sfx.crackle(0.65);
+        f.glowBoost = Math.max(f.glowBoost, 3.2);
+        this.fx.spark(at(0, 3.6, 0.35), 12, 4.5, 0x8fd0ff, new THREE.Vector3(0, 0.2, 0.8), 0.7, 0.4, 8);
+        this.fx.ring(f.pos.x, f.pos.y, 0x9fe0ff, 2.2, 0.35, 0.05);
+        if (f.isPlayer) this.trauma = Math.min(1, this.trauma + 0.06);
+        break;
+      }
+      case 'spin': {
+        // DRILL FISTS: the wrists spin up — a fast servo whine and sparks skipping off both fists
+        this.sfx.servo();
+        this.sfx.screech(0.4);
+        for (const sx of [1, -1]) this.fx.spark(at(sx * 0.7, 3.9, 1.0), 7, 3.2, 0xffd27a, new THREE.Vector3(0, 0, 0.8), 0.6, 0.3, 5);
+        f.glowBoost = Math.max(f.glowBoost, 2.2);
         break;
       }
       case 'roar': {
@@ -2008,20 +2048,12 @@ export class Game {
     // tuck hands the weight to), then the lead foot squares the stance. The steps are slow and high so they read as
     // a machine heaving itself upright, not as a shuffle. The balance steps in robot.ts are muted while he is down.
     if (f.state === 'down') {
-      const want = f.riseU > 0.64 ? 2 : f.riseU > 0.38 ? 1 : 0;
-      if (want > f.riseSteps) {
-        f.riseSteps = want;
-        const foot = want === 1 ? 1 : 0;
-        return {
-          foot,
-          z: foot === 1 ? -0.05 : -0.22, // first step tucks the rear foot in, second brings the lead foot under him
-          x: foot === 1 ? 0.12 : 0.06,
-          dur: 0.3,
-          seq: 900 + want,
-          lift: 0.2,
-        };
-      }
-      return none;
+      // the two plants are authored in poses.ts so the tests drive the rig with exactly what ships
+      const g = getupFoot(f.riseU, f.riseSteps);
+      if (!g) return none;
+      f.riseSteps = g.steps;
+      // z/x = 0: the foot walks all the way home to its standing stance spot, which is where the leg IK wants it
+      return { foot: g.foot, z: g.z, x: g.x, dur: g.dur, seq: g.seq, lift: g.lift };
     }
     if (f.state !== 'attack' || !m) return none;
     if (f.moveT < m.strikeAt * 0.4) return none; // wind-up / feint: the feet do not commit yet
@@ -2197,7 +2229,7 @@ export class Game {
     if (f.state === 'stagger' || f.state === 'ko' || f.state === 'air' || f.state === 'down') return;
     // the counter stance cannot be spammed: it stays on cooldown for a moment after every attempt
     if (id === 'counter' && f.isPlayer && f.counterCd > 0) {
-      this.popup(new THREE.Vector3(f.pos.x, 5.8, f.pos.y), 'STANCE BELUM SIAP', 'pop-info');
+      this.popup(new THREE.Vector3(f.pos.x, 5.8, f.pos.y), 'COUNTER BELUM SIAP', 'pop-info');
       return;
     }
     if (f.dodgeT > 0 && f.state === 'idle') {
@@ -2240,7 +2272,7 @@ export class Game {
     const m = MOVES[id];
     if (id === 'counter' && f.isPlayer) {
       if (f.counterCd > 0) return; // guarded again here: a queued follow-up must not sneak past the cooldown
-      f.counterCd = 1.15;
+      f.counterCd = 0.8; // it is a real punch now, so the anti-spam cooldown is short — but it is still there
     }
     // a punch thrown at (near) full speed is a RUNNING PUNCH
     // (the threshold scales with the footwork setting: at 2× / 3× plain walking is already fast, only a real sprint counts)
@@ -2466,6 +2498,7 @@ export class Game {
     if (m.id === 'grab') act = Math.random() < 0.5 ? 'back' : 'side'; // blocking is useless vs throws
     else if (m.id === 'slam') act = Math.random() < 0.7 ? 'back' : 'side';
     else if (m.id === 'bolt') act = Math.random() < 0.65 ? 'side' : 'back'; // a straight: sidestepping it is the answer
+    else if (m.id === 'counter') act = Math.random() < 0.7 ? 'side' : 'back'; // the counter straight: same answer
     else if (m.id === 'hook') act = Math.random() < def.dodge ? 'back' : 'block'; // wide sweep: sidestep fails
     else if (m.id === 'upper') act = Math.random() < def.dodge * 0.8 ? 'back' : 'block';
     else act = Math.random() < def.dodge ? 'side' : 'block'; // straights are sidestepped
@@ -3045,7 +3078,7 @@ export class Game {
       if (f.state === 'air') {
         f.state = 'down';
         // the knockdown bank: a beat flat out, then the staged rise (the AI gets up a touch sooner at high IQ)
-        f.downDur = 1.8 * (f.isPlayer ? 1 : 1 / (1 + (this.iq - 1) * 0.06));
+        f.downDur = 2.0 * (f.isPlayer ? 1 : 1 / (1 + (this.iq - 1) * 0.06));
         f.downT = f.downDur;
         f.riseU = 0;
         f.riseOut = 0;

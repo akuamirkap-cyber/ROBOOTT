@@ -275,11 +275,13 @@ export class Robot {
     this.root.updateMatrixWorld(true);
     let minY = Infinity;
     for (const pr of this.probes) {
-      // once the IK owns the feet the foot probes are its business. ON THE FLOOR it is the other way round: the
-      // get-up re-plants its feet while the body is still folded over them, the legs run out of reach and a boot
-      // would dig through the canvas — so there the boot probes stay live, and the small lift they ask for only
-      // gives the IK more slack.
-      if (pr.foot && ik > 0.85 && !floorPose) continue;
+      // THE BOOTS NEVER PROP HIM UP. Once the IK owns the feet the ankles are placed on the canvas by the solve
+      // itself, so a boot probe can only do harm: on the floor a single boot poking through the canvas used to
+      // lift the WHOLE body until that boot cleared — the robot floated a full metre above the mat, lying flat,
+      // standing on one heel. The body has to rest on its back, hip or shoulder there. (And while he is standing
+      // the boot probes only ever asked for the 6 mm of mesh/probe slack the art has, tipping the soles off the
+      // canvas — the IK already plants them flush.)
+      if (pr.foot && (floorPose || ik > 0.85)) continue;
       this.tv.copy(pr.p).applyMatrix4(pr.parent.matrixWorld);
       if (this.tv.y < minY) minY = this.tv.y;
     }
@@ -814,12 +816,19 @@ export class Robot {
     const riseDir = (a.riseDir ?? 1) < 0 ? -1 : 1;
     const rs = riseStages(riseU);
     const riseOut = clamp(a.riseOut ?? 0, 0, 1);
-    const eIk = clamp(e * (1 - rs.hipUp), 0, 1.06); // the legs unweight the floor early
+    // The legs are the LAST thing the standing rig gets back. While he is on the canvas they are posed by hand
+    // (the knee tuck / the kneel below) and the IK only takes them over as he drives up out of the crouch, which
+    // is what stops the old behaviour: boots snapped onto lying positions while the body climbed over them.
+    const eIk = clamp(e * (1 - rs.legs), 0, 1.06);
     const eSpan = clamp(e * (1 - rs.unroll) * (1 - rs.hipUp * 0.3), 0, 1.06); // the torso unfolds late, and softly
     // ...and it does not unwind straight to zero: it passes through a deep forward fold, chest over the knees,
     // which is the shape a real stand-up has. `fold` peaks around two thirds of the way up and is gone at both ends.
     const eFold = rs.fold * 0.62 * (0.55 + 0.45 * (1 - eSpan));
-    const ikTarget = (1 - clamp(a.air, 0, 1)) * (1 - sm(Math.min(1, eIk * 1.8)));
+    // ON THE FLOOR THE LEGS GO BACK TO THE IK. The boots are sitting on the canvas, so solving the legs from them
+    // is what gives a real knock-down pose: the knees fold exactly as far as the lie needs, the boots stay ON the
+    // mat, and nothing has to be guessed by hand — the game's get-up footwork then just walks the feet back under
+    // him and the legs follow their own bones. (FK is for the AIRBORNE flail, where nothing touches the floor.)
+    const ikTarget = a.rise !== undefined ? 1 : (1 - clamp(a.air, 0, 1)) * (1 - sm(Math.min(1, eIk * 1.8)));
     this.ikW += (ikTarget - this.ikW) * (1 - Math.exp(-(ikTarget > this.ikW ? 5 : 14) * dt));
     const ik = this.ikW;
     this.airW += (clamp(a.air, 0, 1) - this.airW) * (1 - Math.exp(-11 * dt));
@@ -917,16 +926,19 @@ export class Robot {
     // ---- the staged rise, layered on top of the lie ----
     // `side` peaks about a third of the way in: he rolls off his back onto one shoulder, the hips slide across over
     // the planted hand, the body drifts forward over the knees, and the last beat dips so the rise LANDS.
-    const riseX = riseDir * 0.3 * rs.side;
+    const riseX = riseDir * 0.32 * rs.side;
     // every staged term below is scaled to vanish at BOTH ends of the rise (a term that survived to rise = 1 would
     // pop out of the pose the instant the game hands the body back to the ordinary rig)
-    const riseZ = rs.tuck * 0.14 - rs.tall * 0.05 * (1 - riseU);
-    const riseY = -rs.bounce * 0.16 - riseOut * 0.05;
+    const riseZ = rs.tuck * 0.1 + (rs.fold + rs.kneel) * 0.09 - rs.tall * 0.05 * (1 - riseU);
+    const riseY = -rs.bounce * 0.18 - riseOut * 0.05;
     // turning a lying body about its own spine reads exactly as the log-roll onto the side; as the pitch unwinds
     // the very same channel becomes the twist that squares him back up to the enemy
-    const riseYaw = riseDir * 0.95 * rs.side + Math.sin(t * 7) * 0.03 * riseOut;
-    const riseRoll = riseDir * 0.2 * rs.side;
-    this.body.position.set(bodyX + riseX, lerp(yFall, yIK + fw.bob + land, ik) + riseY, bodyZ + riseZ);
+    const riseYaw = riseDir * 1.0 * rs.side + Math.sin(t * 7) * 0.03 * riseOut;
+    const riseRoll = riseDir * 0.24 * rs.side;
+    // the pivot height while he is on the floor: the hips climb on their own stage curve (they lead the whole
+    // move), and only once he is upright does the standing rig's height take over (heightW → ik).
+    const heightW = a.rise !== undefined ? rs.hipUp : ik;
+    this.body.position.set(bodyX + riseX, lerp(yFall, yIK + fw.bob + land, heightW) + riseY, bodyZ + riseZ);
     this.body.rotation.set(
       a.lean * 0.3 + leanA * 0.4 + hPitch * 0.4 - eSpan * 1.5 + eFold - a.tilt,
       riseYaw,
@@ -947,7 +959,10 @@ export class Robot {
     const hSnap = 0.25 + hPt * 1.15; // a head shot whips the neck, a body shot barely turns it
     // ...and during the get-up the head leads the whole move: chin tucked while he is flat, lifted early so he is
     // already looking at you before the torso arrives, then a small nod as he settles into the stance.
-    const hRise = eSpan * 0.3 - rs.hipUp * 0.34 * (1 - rs.unroll) - eFold * 0.55 + rs.bounce * 0.1 - riseOut * 0.06 * Math.sin(t * 11);
+    const hRise =
+      rs.head * 0.42 // the head comes up off the chest FIRST (before the hips, before the torso)
+      + eSpan * 0.3 - rs.hipUp * 0.34 * (1 - rs.unroll) - eFold * 0.55 + rs.bounce * 0.1
+      - riseOut * 0.06 * Math.sin(t * 11);
     const hx = this.sHeadX.update(-0.06 - a.lean * 0.5 + hRise - leanA * 0.3 + hPitch * hSnap - hUp * 0.3 * hMag, 5.4, 0.45, dt);
     const hy = this.sHeadY.update(-a.twist * 0.72 - lag * 0.5 + hYaw * (0.6 + hPt * 0.9), 5.6, 0.5, dt);
     const hz = this.sHeadZ.update(-rollA * 0.4 + hRoll * (0.4 + hPt * 0.8), 5.2, 0.5, dt);
@@ -1122,19 +1137,25 @@ export class Robot {
       const flail = Math.sin(t * 9 + i * Math.PI) * 0.22;
       const airHx = (i === 0 ? -0.65 : 0.25) + flail;
       const airKx = (i === 0 ? 0.95 : 0.45) + flail * 0.5;
-      const fallHx = -0.12 * s;
-      const fallKx = 0.15;
+      // LYING LIMP: the pelvis is pitched back almost 90°, so the legs have to be near-zero in this frame to
+      // actually lie ON the mat. A bent knee here hangs the boot under the canvas, and the floor solver is then
+      // left choosing between a boot through the mat and a body floating a metre above it.
+      const fallHx = 0.02 * s;
+      const fallKx = 0.1;
       const am = this.airW;
-      // GET-UP: while the body is still on the canvas one knee tucks in under the hips — that is the leg he comes
-      // up on — and the other straightens and swings round behind it. The weight fades out as the IK takes the
-      // legs back (~rise 0.4), so the tuck hands over to real planted feet instead of fighting them.
+      // GET-UP: the legs are the load-bearing part of the whole move, and they are posed here by hand (the IK
+      // does not get them back until he drives up out of the crouch). The LEAD leg — the one on the side he rolls
+      // towards — folds hard, knee up over the boot, and stays under him; the TRAIL leg draws in behind it, its
+      // shin lying on the canvas with him up on that knee. The `kneel` beat then rolls the weight onto the lead
+      // foot: the trail hip extends, the lead hip drives over it — the push a real stand-up is built on.
       const tuckW = rs.tuck * (1 - ik);
+      const kneelW = rs.kneel * (1 - ik);
       const lead = riseDir > 0 ? 0 : 1;
-      const leadW = i === lead ? tuckW : 0;
-      const trailW = i === lead ? 0 : tuckW;
-      const fkHx = lerp(fallHx, airHx, am) - 0.95 * leadW + 0.3 * trailW;
-      const fkKx = lerp(fallKx, airKx, am) + 1.5 * leadW + 0.45 * trailW;
-      const fkHz = lerp(s * 0.12, s * 0.2, am) + s * 0.28 * tuckW;
+      const leadW = i === lead ? 1 : 0;
+      const trailW = 1 - leadW;
+      const fkHx = lerp(fallHx, airHx, am) - 1.25 * leadW * tuckW - 0.3 * leadW * kneelW + 0.4 * trailW * kneelW;
+      const fkKx = lerp(fallKx, airKx, am) + 2.0 * leadW * tuckW + 1.6 * trailW * tuckW;
+      const fkHz = lerp(s * 0.12, s * 0.2, am) + s * 0.34 * tuckW;
 
       const hxF = lerp(fkHx, ikHx, ik);
       const kxF = lerp(fkKx, kx, ik);

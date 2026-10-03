@@ -14,7 +14,7 @@
 //   §6  every freestyle move is continuous and returns to the guard
 import * as THREE from 'three';
 import { Robot } from './.__robot.mjs';
-import { FREESTYLE, GUARD, freestylePose, riseArms, riseStages } from './.__poses.mjs';
+import { FREESTYLE, GUARD, freestylePose, getupFoot, riseArms, riseStages } from './.__poses.mjs';
 
 const D = 1 / 60;
 const STYLE = { variant: 'atom', main: 0x8a8f98, secondary: 0x3a3f47, accent: 0x1e9bff, glow: 0x63e0ff };
@@ -61,7 +61,7 @@ class Rig {
   }
 }
 
-const ROUND = 1.8; // the time on the floor (Fighter.downDur)
+const ROUND = 2.0; // the time on the floor (Fighter.downDur)
 const RISE_AT = 0.3; // the flat-out beat before the rise starts (Game.ts)
 const riseUAt = (t) => Math.max(0, Math.min(1, (1 - Math.max(0, 1 - t / ROUND) - RISE_AT) / (1 - RISE_AT)));
 
@@ -69,8 +69,8 @@ const riseUAt = (t) => Math.max(0, Math.min(1, (1 - Math.max(0, 1 - t / ROUND) -
 console.log('\n§1  staging curves are exactly zero at both ends');
 {
   // OFFSET stages must be zero at both ends (they move the body). SATURATING stages must be 0 → 1.
-  const OFFSET = ['side', 'tuck', 'fold', 'bounce'];
-  const SAT = ['hipUp', 'unroll', 'tall'];
+  const OFFSET = ['side', 'head', 'tuck', 'kneel', 'fold', 'reach', 'bounce'];
+  const SAT = ['hipUp', 'unroll', 'legs', 'tall'];
   const s0 = riseStages(0);
   const s1 = riseStages(1);
   const bad = [];
@@ -101,6 +101,7 @@ const riseDir = 1;
   // settle in the stance, then lie down the way a knock-down leaves him (fall = 1, limp, like Game.ts feeds it)
   for (let i = 0; i < 40; i++) rig.step({});
   const trace = [];
+  let riseSteps = 0;
   let prevArms = null;
   let prevJoints = null;
   let maxArmJump = 0;
@@ -111,13 +112,21 @@ const riseDir = 1;
   let plantGap = Infinity; // how far the pressing hand sits ABOVE the deepest body probe during the plant window
   let footLo = Infinity; // lowest point of a PLANTED (not stepping) boot once the IK has the legs back
   let footHi = 0; // highest a boot gets while it is mid re-plant
+  let bootSink = Infinity; // the deepest a boot is ever allowed to dig into the canvas
+  let bodyTouch = Infinity; // the closest a NON-foot part gets to the canvas while he is still down (no floating)
+  let kneeEarly = 0; // the deepest knee fold reached while the hips are still on the canvas
   const plantArm = riseArms(0.3, riseDir).a0.sz > 0.6 ? 0 : 1; // the arm that is out on the canvas is the plant
   const n = Math.round(ROUND / D);
   for (let i = 0; i <= n; i++) {
     const t = i * D;
     const u = riseUAt(t);
     const rb = riseArms(u, riseDir);
-    rig.step({ arms: [rb.a0, rb.a1], twist: rb.tw, lean: rb.ln, dip: rb.dp, roll: rb.rl, fall: 1, air: 0, rise: u, riseDir });
+    // the get-up footwork, the same call the game makes: without it the rig would be measured with its boots
+    // still lying where the knock-down left them — a pose the game never actually shows
+    const gf = getupFoot(u, riseSteps);
+    if (gf) riseSteps = gf.steps;
+    const foot = gf ? { punchFoot: gf.foot, punchZ: gf.z, punchX: gf.x, punchDur: gf.dur, punchSeq: gf.seq, stepLift: gf.lift } : {};
+    rig.step({ arms: [rb.a0, rb.a1], twist: rb.tw, lean: rb.ln, dip: rb.dp, roll: rb.rl, fall: 1, air: 0, rise: u, riseDir, ...foot });
     const arms = [rig.a.arms[0].sx, rig.a.arms[0].sz, rig.a.arms[1].sx, rig.a.arms[1].sz];
     if (prevArms) maxArmJump = Math.max(maxArmJump, ...arms.map((v, k) => Math.abs(v - prevArms[k])));
     prevArms = arms;
@@ -135,6 +144,7 @@ const riseDir = 1;
       }
       return lo;
     };
+    const bootLo = (i) => probeMin((pr) => pr.parent === rig.robot.footJ[i]);
     const lo = probeMin((pr) => pr.parent === rig.robot.fists[plantArm]);
     if (lo < minFist) {
       minFist = lo;
@@ -147,7 +157,7 @@ const riseDir = 1;
     // once the IK owns the legs (u > 0.6) a foot that is NOT mid-step has to be sitting on the canvas
     if (u > 0.62) {
       for (let i = 0; i < 2; i++) {
-        const boot = probeMin((pr) => pr.parent === rig.robot.footJ[i]);
+        const boot = bootLo(i);
         if (rig.robot.feet[i].stepping) footHi = Math.max(footHi, boot);
         else footLo = Math.min(footLo, boot);
       }
@@ -162,6 +172,11 @@ const riseDir = 1;
     // what the body is doing — the "loose" evidence (the hip JOINT height is what a viewer reads, not the pivot)
     const pitch = rig.robot.body.rotation.x;
     const hipY = joint(rig.robot, 'hip', 0).y;
+    const bootA = bootLo(0);
+    const bootB = bootLo(1);
+    bootSink = Math.min(bootSink, bootA, bootB);
+    if (u < 0.45) bodyTouch = Math.min(bodyTouch, probeMin((pr) => !pr.foot));
+    if (u <= 0.35) kneeEarly = Math.max(kneeEarly, rig.robot.kneeJ[0].rotation.x, rig.robot.kneeJ[1].rotation.x);
     trace.push({ u, pitch, hipY, yaw: rig.robot.body.rotation.y, roll: rig.robot.body.rotation.z });
   }
   ok('no jump in the arm channels', maxArmJump < 0.9, `worst ${f3(maxArmJump)} rad/frame`);
@@ -170,6 +185,9 @@ const riseDir = 1;
   ok('the plant hand carries the weight', plantGap < 0.12, `hand sits ${f3(plantGap)} against the body's deepest point`);
   ok('nothing sinks through the floor', minProbe > -0.02, `lowest probe ${f3(minProbe)}`);
   ok('the boots are resting on the canvas once he is up', footLo > -0.05 && footLo < 0.3, `lowest planted boot ${f3(footLo)} (worst step lift ${f3(footHi)})`);
+  ok('no boot digs through the canvas on the way up', bootSink > -0.12, `deepest boot ${f3(bootSink)}`);
+  ok('he never floats above the canvas while he is down', bodyTouch < 0.2, `closest body part ${f3(bodyTouch)} at the start`);
+  ok('the knees are loaded while he is still on the canvas', kneeEarly > 0.9, `deepest knee ${f3(kneeEarly)} rad by rise 0.35`);
 
   // §5 the hips lead: at the halfway point of the push the hips are most of the way up while the torso is still
   // folded. A stiff get-up is the other way round (the torso rotates up first, the hips follow).
@@ -179,7 +197,14 @@ const riseDir = 1;
   const mid = at(0.42);
   const hipFrac = (mid.hipY - low.hipY) / Math.max(0.001, up.hipY - low.hipY);
   const pitchFrac = (mid.pitch - low.pitch) / Math.max(0.001, up.pitch - low.pitch);
-  ok('the hips are up before the torso unfolds', hipFrac > 0.75 && pitchFrac < 0.6, `hips ${(hipFrac * 100).toFixed(0)}% vs torso ${(pitchFrac * 100).toFixed(0)}% at rise 0.42`);
+  // A rise that reads as a person standing up has its parts on DIFFERENT clocks: the hips start climbing to a
+  // crouch on their own while the torso is still folded back over them, and the torso only unwinds at the end.
+  // (A stiff get-up rotates the whole body up about the feet in one rigid arc: hipFrac ≈ pitchFrac.)
+  ok(
+    'the hips are up while the torso is still folded',
+    hipFrac > 0.4 && hipFrac < 0.95 && pitchFrac < 0.5 && pitchFrac < hipFrac - 0.1,
+    `hips ${(hipFrac * 100).toFixed(0)}% vs torso ${(pitchFrac * 100).toFixed(0)}% at rise 0.42 (torso still ${f3(mid.pitch)} rad back)`,
+  );
   const yawAt = trace.reduce((m, s) => Math.max(m, Math.abs(s.yaw)), 0);
   ok('it rolls onto a shoulder on the way up', yawAt > 0.5, `peak body turn ${f3(yawAt)} rad`);
   console.log(

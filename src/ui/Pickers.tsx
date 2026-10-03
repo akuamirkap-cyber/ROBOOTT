@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { FOOTWORK_STEPS, IQ_STEPS, ULTRA_COLOR } from '../game/Game';
+import { CAM_MODES, FOOTWORK_STEPS, IQ_STEPS, ULTRA_COLOR } from '../game/Game';
 import { SFX_PROFILES, type SfxProfile } from '../game/audio';
 import { cssVar } from './Emblem';
 
@@ -160,6 +160,53 @@ export function IqPicker({ value, onPick }: { value: number; onPick: (n: number)
         })}
       </div>
       <div className="mt-1.5 text-[10px] leading-tight text-white/50">{IQ_SUB[value] ?? ''} — makin tinggi, musuh membaca seranganmu lebih cepat, lebih sering dodge &amp; blok, dan membalas lebih tajam.</div>
+    </div>
+  );
+}
+
+const CAM_COLOR = '#7dd3fc';
+
+/** the five camera presets. Same framing guarantee, five very different seats in the arena. */
+export function CamPicker({ value, onPick }: { value: number; onPick: (i: number) => void }) {
+  return (
+    <div>
+      <SectionTitle
+        right={
+          <span className="font-tech text-[9px] tracking-[0.2em]" style={{ color: CAM_COLOR }}>
+            / . SAAT BERTANDING
+          </span>
+        }
+      >
+        MODE KAMERA
+      </SectionTitle>
+      <div className="flex flex-col gap-1.5">
+        {CAM_MODES.map((m, i) => {
+          const on = i === value;
+          return (
+            <button
+              key={m.id}
+              onClick={() => onPick(i)}
+              className={`tile cut-sm pointer-events-auto relative px-3 py-2 text-left ${on ? 'tile-on' : ''}`}
+              style={cssVar('--c', CAM_COLOR)}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-display text-[17px] tracking-wider" style={{ color: on ? CAM_COLOR : '#ffffff' }}>
+                  {i + 1}. {m.name}
+                </span>
+                <span className="flex items-center gap-2">
+                  <span className="font-tech text-[8px] tracking-[0.16em] text-white/40">{m.tag}</span>
+                  {on && <span className="font-tech text-[9px] font-bold tracking-[0.16em]" style={{ color: CAM_COLOR }}>AKTIF</span>}
+                </span>
+              </div>
+              <div className="mt-0.5 text-[10px] leading-tight text-white/55">{m.desc}</div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 text-[10px] leading-tight text-white/45">
+        Semua mode lewat pengaman framing yang sama: robot tidak akan pernah terpotong tepi layar. Ganti kapan saja —
+        di menu, saat jeda, atau tengah ronde dengan tombol <b className="text-white/70">/</b> dan <b className="text-white/70">.</b>
+      </div>
     </div>
   );
 }

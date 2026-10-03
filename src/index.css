@@ -512,6 +512,10 @@ body,
   box-shadow: 0 0 22px var(--w), inset 0 0 14px rgba(255, 255, 255, 0.12);
   animation: warnPulse 0.26s ease-in-out infinite alternate;
 }
+.warn-key .kw {
+  font-size: 15px;
+  letter-spacing: 0.06em;
+}
 .warn-tag {
   position: absolute;
   left: 50%;

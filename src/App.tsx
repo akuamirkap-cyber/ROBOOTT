@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Game, OPPONENTS, loadDifficulty, loadFootwork, loadIq, type HudState } from './game/Game';
+import { CAM_MODES, Game, OPPONENTS, loadCamMode, loadDifficulty, loadFootwork, loadIq, type HudState } from './game/Game';
 import { loadSfxProfile, type SfxProfile } from './game/audio';
 import { Menu } from './ui/Menu';
 import { Hud, TouchControls } from './ui/Hud';
@@ -41,6 +41,13 @@ export default function App() {
   const pickFw = (m: number) => {
     setFwLocal(m);
     gameRef.current?.setFootwork(m);
+  };
+
+  const [camLocal, setCamLocal] = useState<number>(loadCamMode);
+  const camNow = hud?.cam ?? camLocal; // the game is the source of truth (/ . change it during a fight)
+  const pickCam = (i: number) => {
+    setCamLocal(i);
+    gameRef.current?.setCamMode(i);
   };
 
   const [iqLocal, setIqLocal] = useState<number>(loadIq);
@@ -118,6 +125,8 @@ export default function App() {
           onUltra={pickUltra}
           fw={fwNow}
           onFw={pickFw}
+          cam={camNow}
+          onCam={pickCam}
           iq={iqNow}
           onIq={pickIq}
           game={game}
@@ -151,6 +160,8 @@ export default function App() {
           onSfx={pickSfx}
           fw={fwNow}
           onFw={pickFw}
+          cam={camNow}
+          onCam={pickCam}
           iq={iqNow}
           onIq={pickIq}
           onResume={() => game?.togglePause()}
@@ -164,6 +175,16 @@ export default function App() {
 
       {/* ---------- utility buttons (pause / sound) ---------- */}
       <div className="absolute right-3 z-30 flex gap-2" style={inMatch ? (touch ? { top: 78 } : { bottom: 12 }) : { top: 12 }}>
+        {inMatch && (
+          <button
+            onClick={() => pickCam((camNow + 1) % CAM_MODES.length)}
+            className="ghost cut-sm pointer-events-auto flex h-9 items-center gap-1.5 px-2.5 font-tech text-[9px] font-bold tracking-[0.16em] text-sky-200"
+            title="Ganti mode kamera ( / dan . )"
+          >
+            <span>🎥</span>
+            <span className="hidden sm:inline">{CAM_MODES[camNow]?.name ?? 'KAMERA'}</span>
+          </button>
+        )}
         {inMatch && (
           <button onClick={() => game?.togglePause()} className="ghost cut-sm pointer-events-auto grid h-9 w-9 place-items-center" title="Pause (Esc)">
             <IconPause />

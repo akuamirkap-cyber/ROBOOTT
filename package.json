@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:feet": "esbuild src/game/robot.ts --bundle --format=esm --platform=node --outfile=.__robot.mjs --external:three && node feettest.mjs",
+    "test:cam": "esbuild src/game/cammath.ts --bundle --format=esm --platform=node --outfile=.__cam.mjs --external:three && node camtest.mjs",
+    "test:crowd": "esbuild crowdscene.ts --bundle --format=esm --platform=node --outfile=.__crowdscene.mjs --external:three && node crowdtest.mjs",
+    "test": "npm run test:feet && npm run test:cam && npm run test:crowd"
   },
   "dependencies": {
     "@types/three": "^0.186.0",

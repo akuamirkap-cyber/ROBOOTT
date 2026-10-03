@@ -1,4 +1,4 @@
-import { PLAYER_NAME, ULTRA_COLOR, type Game, type HudState } from '../game/Game';
+import { CAM_MODES, PLAYER_NAME, ULTRA_COLOR, type Game, type HudState } from '../game/Game';
 import { Key } from './Emblem';
 
 function Pips({ n, color }: { n: number; color: string }) {
@@ -172,6 +172,36 @@ export function Hud({ h, touch }: { h: HudState; touch: boolean }) {
         </div>
       )}
 
+      {/* ---------- stance hand ---------- */}
+      {h.phase === 'fight' && (
+        <div className="absolute left-3 top-[86px] sm:left-6 sm:top-[104px]">
+          <div
+            className={`flex items-center gap-2 border px-2 py-1 font-tech text-[10px] font-bold tracking-[0.22em] backdrop-blur-sm transition-colors ${
+              h.handFlash > 0 ? 'border-amber-300 bg-amber-400/25 text-amber-100' : 'border-white/25 bg-black/45 text-white/70'
+            }`}
+          >
+            <span className={h.hand === 1 ? 'text-orange-300' : 'text-sky-300'}>{h.hand === 1 ? '▶' : '◀'}</span>
+            <span>TANGAN {h.hand === 1 ? 'KANAN' : 'KIRI'}</span>
+          </div>
+          {/* the target every punch is aimed at — tap SPACE / T to switch */}
+          <div
+            className={`mt-1 flex items-center gap-2 border px-2 py-1 font-tech text-[10px] font-bold tracking-[0.22em] backdrop-blur-sm transition-colors ${
+              h.aimFlash > 0 ? 'border-rose-300 bg-rose-400/25 text-rose-100' : 'border-white/25 bg-black/45 text-white/70'
+            }`}
+          >
+            <span className={h.aim === 1 ? 'text-orange-300' : 'text-sky-300'}>◎</span>
+            <span>TARGET {h.aim === 1 ? 'DADA' : 'KEPALA'}</span>
+          </div>
+          {h.parry ? (
+            <div className="mt-1 animate-pulse border border-amber-300/70 bg-amber-400/20 px-2 py-0.5 text-center font-tech text-[10px] font-bold tracking-[0.22em] text-amber-100">PARRY [L]!</div>
+          ) : (
+            <div className={`mt-1 border px-2 py-0.5 text-center font-tech text-[10px] font-bold tracking-[0.22em] ${h.parryCd > 0 ? 'border-white/15 bg-black/40 text-white/35' : 'border-amber-300/50 bg-black/40 text-amber-200/90'}`}>
+              CTR [L] {h.parryCd > 0 ? `${h.parryCd.toFixed(1)}s` : 'SIAP'}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ---------- controls legend ---------- */}
       {!touch && (
         <div className="glass cut-sm absolute bottom-4 left-4 hidden max-w-[330px] px-3 py-2 text-[11px] leading-6 text-white/75 lg:block">
@@ -181,12 +211,16 @@ export function Hud({ h, touch }: { h: HudState; touch: boolean }) {
             <Hint k="×2">dash</Hint>
           </div>
           <div>
-            <Hint k="J K U I">serang</Hint>
-            <Hint k="L">grab</Hint>
+            <Hint k="A / D">ganti tangan ◀ ▶</Hint>
+            <Hint k="Q">target kepala/dada</Hint>
           </div>
           <div>
-            <Hint k="SPACE">blok</Hint>
-            <Hint k="Q">dodge saat ◎</Hint>
+            <Hint k="H J K">jab · hook · uppercut</Hint>
+            <Hint k="L">counter</Hint>
+            <Hint k="P">grab</Hint>
+          </div>
+          <div>
+            <Hint k="SPACE">dodge ◎ (tahan = blok)</Hint>
             <Hint k="R">overdrive</Hint>
             <Hint k="E">ippo</Hint>
             <Hint k="M">taunt</Hint>
@@ -195,6 +229,10 @@ export function Hud({ h, touch }: { h: HudState; touch: boolean }) {
           <div>
             <Hint k="[ ]">footwork</Hint>
             <b className="font-tech text-emerald-300">{h.fw}×</b>
+          </div>
+          <div>
+            <Hint k="/ .">mode kamera</Hint>
+            <b className="font-tech text-sky-300">{CAM_MODES[h.cam]?.name ?? 'SIARAN'}</b>
           </div>
         </div>
       )}
@@ -257,17 +295,18 @@ export function TouchControls({ game }: { game: Game | null }) {
         <div className="absolute bottom-0 left-14"><TouchBtn game={game} code="KeyS" label="▼" className={dp} /></div>
         <div className="absolute left-14 top-14"><TouchBtn game={game} code="KeyF" label="RUN" className="bg-emerald-500/40 text-sm" /></div>
       </div>
+      {/* 3×3 pad: strikes bottom row, then grab / counter / block, then the specials stacked above */}
       <div className="relative h-48 w-56">
-        <div className="absolute left-0 top-0"><TouchBtn game={game} code="KeyJ" label="JAB" className="bg-sky-500/50" /></div>
-        <div className="absolute left-[72px] top-0"><TouchBtn game={game} code="KeyK" label="CROSS" className="bg-red-500/50 text-sm" /></div>
-        <div className="absolute left-[144px] top-4"><TouchBtn game={game} code="KeyU" label="HOOK" className="bg-orange-500/50 text-sm" /></div>
-        <div className="absolute left-[144px] top-[88px]"><TouchBtn game={game} code="KeyI" label="UPPER" className="bg-purple-500/50 text-sm" /></div>
-        <div className="absolute left-0 top-[76px]"><TouchBtn game={game} code="Space" label="BLOK" className="bg-white/25 text-sm" /></div>
-        <div className="absolute left-[72px] top-[88px]"><TouchBtn game={game} code="KeyQ" label="DODGE" className="bg-emerald-500/50 text-xs" /></div>
-        <div className="absolute -top-16 left-[144px]"><TouchBtn game={game} code="KeyL" label="GRAB" className="bg-pink-500/60 text-xs" size="h-14 w-14" /></div>
-        <div className="absolute -top-16 left-[72px]"><TouchBtn game={game} code="KeyR" label="OD" className="bg-amber-400/60" size="h-14 w-14" /></div>
-        <div className="absolute -top-16 left-0"><TouchBtn game={game} code="KeyE" label="IPPO" className="bg-cyan-400/50 text-xs" size="h-14 w-14" /></div>
-        <div className="absolute -top-[120px] left-[72px]"><TouchBtn game={game} code="KeyN" label="★" className="bg-yellow-400/50" size="h-12 w-12" /></div>
+        <div className="absolute left-0 top-0"><TouchBtn game={game} code="KeyH" label="JAB" className="bg-sky-500/50 text-sm" size="h-14 w-14" /></div>
+        <div className="absolute left-[76px] top-0"><TouchBtn game={game} code="KeyJ" label="HOOK" className="bg-orange-500/50 text-xs" size="h-14 w-14" /></div>
+        <div className="absolute left-[152px] top-0"><TouchBtn game={game} code="KeyK" label="UPPER" className="bg-purple-500/50 text-[10px]" size="h-14 w-14" /></div>
+        <div className="absolute left-0 top-[72px]"><TouchBtn game={game} code="KeyP" label="GRAB" className="bg-pink-500/60 text-xs" size="h-14 w-14" /></div>
+        <div className="absolute left-[76px] top-[72px]"><TouchBtn game={game} code="KeyL" label="CTR" className="bg-amber-500/60 text-sm" size="h-14 w-14" /></div>
+        <div className="absolute left-[152px] top-[72px]"><TouchBtn game={game} code="KeyQ" label="TARGET" className="bg-rose-500/60 text-[9px]" size="h-14 w-14" /></div>
+        <div className="absolute left-0 -top-[68px]"><TouchBtn game={game} code="Space" label="DODGE / BLOK" className="bg-emerald-500/50 text-[9px]" size="h-14 w-14" /></div>
+        <div className="absolute left-[76px] -top-[68px]"><TouchBtn game={game} code="KeyR" label="OD" className="bg-amber-400/60" size="h-14 w-14" /></div>
+        <div className="absolute left-[152px] -top-[68px]"><TouchBtn game={game} code="KeyE" label="IPPO" className="bg-cyan-400/50 text-[10px]" size="h-14 w-14" /></div>
+        <div className="absolute left-[76px] -top-[136px]"><TouchBtn game={game} code="KeyN" label="★" className="bg-yellow-400/50" size="h-12 w-12" /></div>
       </div>
     </div>
   );

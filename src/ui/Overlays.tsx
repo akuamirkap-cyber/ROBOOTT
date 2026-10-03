@@ -1,7 +1,7 @@
 import { OPPONENTS, PLAYER_NAME, ULTRA_COLOR, type HudState } from '../game/Game';
 import type { SfxProfile } from '../game/audio';
 import { Emblem } from './Emblem';
-import { FootworkPicker, IqPicker, SfxPicker } from './Pickers';
+import { CamPicker, FootworkPicker, IqPicker, SfxPicker } from './Pickers';
 
 export function PauseMenu({
   onResume,
@@ -10,6 +10,8 @@ export function PauseMenu({
   onSfx,
   fw,
   onFw,
+  cam,
+  onCam,
   iq,
   onIq,
 }: {
@@ -19,6 +21,8 @@ export function PauseMenu({
   onSfx: (id: SfxProfile) => void;
   fw: number;
   onFw: (m: number) => void;
+  cam: number;
+  onCam: (i: number) => void;
   iq: number;
   onIq: (n: number) => void;
 }) {
@@ -30,7 +34,10 @@ export function PauseMenu({
           <div className="font-display text-6xl leading-none tracking-[0.15em]">PAUSE</div>
         </div>
         <div className="my-4 h-px bg-gradient-to-r from-amber-300/70 to-transparent" />
-        <SfxPicker value={sfx} onPick={onSfx} />
+        <CamPicker value={cam} onPick={onCam} />
+        <div className="mt-4">
+          <SfxPicker value={sfx} onPick={onSfx} />
+        </div>
         <div className="mt-4">
           <FootworkPicker value={fw} onPick={onFw} />
         </div>

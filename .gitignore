@@ -4,3 +4,10 @@ dist-ssr
 *.local
 .env
 .DS_Store
+
+# test bundles + offline preview renders (rebuilt by the test harnesses)
+.__*
+preview-*.png
+
+# scratch reference stills pulled from the web while tuning the art
+image-search/

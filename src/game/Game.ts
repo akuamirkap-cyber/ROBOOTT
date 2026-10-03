@@ -5,6 +5,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { Robot, type Pose, type RobotStyle } from './robot';
+import { FREESTYLE, freestyleByKey, freestylePose, riseArms } from './poses';
 import { buildArena, type Arena } from './arena';
 import { Effects, Trail } from './fx';
 import { Decap } from './decap';
@@ -546,9 +547,15 @@ class Fighter {
   animT = Math.random() * 10;
   glowBoost = 0;
   mode: 'normal' | 'taunt' | 'victory' = 'normal';
-  tauntT = 0; // TAUNT: time left of the show-off
+  tauntT = 0; // FREESTYLE: time left of the show-off
   tauntDur = 0;
-  tauntStyle = 0; // 0 = chest pound (M) · 1 = Zeus belt-raise (N)
+  tauntStyle = 0; // index into the freestyle book (poses.ts) — M N B U I Y O pick one each
+  // GET-UP: the staged rise off the canvas (see riseStages in poses.ts)
+  riseU = 0; // 0 = flat on the floor, 1 = back on his feet
+  riseDir = 1; // the shoulder he rolls onto and pushes off
+  riseOut = 0; // 1 → 0 over the beat after he stands (the loose settle)
+  riseSteps = 0; // how many of the two re-plants have fired
+  downDur = 1.8; // total time on the floor, get-up included
   poise = POISE_MAX; // stability: how much punishment is left before a normal punch can knock you down
   poiseT = 0; // delay before the poise starts refilling
   poiseMax = POISE_MAX;
@@ -621,6 +628,11 @@ class Fighter {
     this.tauntT = 0;
     this.tauntDur = 0;
     this.tauntStyle = 0;
+    this.riseU = 0;
+    this.riseDir = 1;
+    this.riseOut = 0;
+    this.riseSteps = 0;
+    this.downDur = 1.8;
     this.poiseMax = POISE_MAX * (this.isPlayer ? 1.25 : 1); // you are a little sturdier than the opponents
     this.poise = this.poiseMax;
     this.poiseT = 0;
@@ -1368,11 +1380,21 @@ export class Game {
           this.startMove(p, far || this.odToggle ? 'bolt' : 'slam');
         }
         break;
-      case 'KeyM': // taunt: beat your chest
-        this.taunt(p, 0);
+      // ---------------- FREESTYLE ----------------
+      // The whole show-off book (poses.ts) sits on its own keys, and one key just cycles it: M N B U I Y O.
+      case 'KeyM':
+      case 'KeyN':
+      case 'KeyB':
+      case 'KeyU':
+      case 'KeyI':
+      case 'KeyY':
+      case 'KeyO': {
+        const fs = freestyleByKey(code);
+        if (fs) this.taunt(p, fs.id);
         break;
-      case 'KeyN': // taunt: raise both arms like a champion lifting the belt
-        this.taunt(p, 1);
+      }
+      case 'Freestyle': // the touch button: cycle to the next move in the book
+        this.taunt(p, (p.tauntStyle + 1) % FREESTYLE.length);
         break;
       case 'BracketRight':
         this.cycleFootwork(1);
@@ -1782,23 +1804,123 @@ export class Game {
    * TAUNT (M): beat your chest at the opponent. It fills the Overdrive meter and whips the crowd up —
    * but you are wide open while you do it (taking a hit hurts more and cancels it instantly).
    */
+  /**
+   * FREESTYLE. One entry point for the whole show-off book (poses.ts): every move is a robotic piece of business —
+   * a shoulder roll, a beckoning flick, a cable flex, a windmill into a fist clap, a piston rev — rather than
+   * something a human body does. They all run through the same rig, so they blend in and out of the guard cleanly.
+   */
   private taunt(f: Fighter, style = 0) {
     if (f.state !== 'idle' || f.dodgeT > 0 || f.tauntT > 0) return false;
-    const zeus = style === 1;
-    f.tauntStyle = style;
-    f.tauntT = zeus ? 2.2 : 1.5; // the belt-raise is slower and prouder
-    f.tauntDur = f.tauntT;
+    const fs = FREESTYLE[THREE.MathUtils.clamp(Math.round(style), 0, FREESTYLE.length - 1)];
+    f.tauntStyle = fs.id;
+    f.tauntT = fs.dur;
+    f.tauntDur = fs.dur;
     f.blocking = false;
     f.ippo = false;
-    f.glowBoost = Math.max(f.glowBoost, zeus ? 2.4 : 1.6);
+    f.glowBoost = Math.max(f.glowBoost, fs.glow);
     this.sfx.servo();
-    if (zeus) this.sfx.say(f.isPlayer ? 'I am the champion!' : 'Bow down!');
-    else this.sfx.say(f.isPlayer ? 'Come on!' : 'Is that all?');
+    this.sfx.say(f.isPlayer ? fs.say : this.tauntBack(fs));
     if (this.phase === 'fight') {
-      this.popup(new THREE.Vector3(f.pos.x, 6.6 * f.scale, f.pos.y), zeus ? (f.isPlayer ? 'SANG JUARA!' : 'SOMBONG!') : f.isPlayer ? 'TAUNT!' : 'MENGEJEK!', 'pop-crit');
-      this.crowdRoar(zeus ? 0.7 : 0.45, zeus ? 2.4 : 1.6);
+      this.popup(new THREE.Vector3(f.pos.x, 6.6 * f.scale, f.pos.y), f.isPlayer ? fs.tag : this.tauntBack(fs).toUpperCase(), 'pop-crit');
+      this.crowdRoar(0.4 + fs.dur * 0.12, 1.4 + fs.dur * 0.35);
     }
     return true;
+  }
+
+  /** the same show-off, thrown back at you with the trash talk of a machine that is not impressed */
+  private tauntBack(fs: { id: number }) {
+    switch (fs.id) {
+      case 1:
+        return 'Bow down!';
+      case 2:
+        return 'Missing me already?';
+      case 4:
+        return 'This is power.';
+      case 5:
+        return 'Hear that?';
+      case 6:
+        return 'Engine hot.';
+      default:
+        return 'Is that all?';
+    }
+  }
+
+  /**
+   * The one-shots of the freestyle book. `poses.ts` says WHEN each beat happens (a progress 0 → 1) — the sound,
+   * the sparks, the crowd and the camera kick all live here, so the animation and its feedback can never drift apart.
+   */
+  private fsCue(f: Fighter, s: string) {
+    const yaw = f.yaw;
+    const side = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw)); // the robot's own left, in world space
+    const at = (x: number, y: number, z: number) => new THREE.Vector3(f.pos.x + side.x * x, y * f.scale, f.pos.y + side.z * x + z);
+    switch (s) {
+      case 'beat':
+        this.tauntBeat(f);
+        break;
+      case 'raise':
+        this.tauntRaise(f);
+        break;
+      case 'roll': {
+        // the shoulder roll: servos whining, dust puffing off the boots as the weight shifts
+        this.sfx.servo();
+        this.sfx.whoosh(0.28);
+        this.fx.spark(at(0.5, 0.22, 0), 5, 2.4, 0xbfc9d8, new THREE.Vector3(0, 1, 0), 0.8, 0.35, 4);
+        this.fx.spark(at(-0.5, 0.22, 0), 5, 2.4, 0xbfc9d8, new THREE.Vector3(0, 1, 0), 0.8, 0.35, 4);
+        if (f.isPlayer) this.trauma = Math.min(1, this.trauma + 0.05);
+        break;
+      }
+      case 'beckon': {
+        // the flick of the palms: a quiet servo tick and a spark off each hand
+        this.sfx.tick();
+        for (const sx of [1, -1]) this.fx.spark(at(sx * 0.85, 4.5, 0.5), 5, 2.6, 0x9fe6ff, new THREE.Vector3(0, 0.4, 0.6), 0.5, 0.3, 4);
+        break;
+      }
+      case 'flex': {
+        // CABLE FLEX: the tension really does crackle — arcs across both shoulders and the lights surge
+        this.sfx.crackle(0.7);
+        f.glowBoost = Math.max(f.glowBoost, 3.2);
+        for (const sx of [1, -1]) {
+          const p = at(sx * 1.15, 4.7, -0.1);
+          this.fx.spark(p, 10, 4.5, 0x8fd0ff, new THREE.Vector3(0, 0.2, 0), 0.6, 0.4, 10);
+          this.fx.ring(p.x, p.z, 0x8fd0ff, 1.5, 0.3, 0.05);
+        }
+        if (f.isPlayer) this.fovKick = -2;
+        break;
+      }
+      case 'clap': {
+        // the windmill ends in a metal clap: a hard crack, a shock ring and a kick through the camera
+        this.sfx.hit(0.5);
+        this.sfx.crackle(0.8);
+        f.glowBoost = Math.max(f.glowBoost, 3.4);
+        this.fx.spark(at(0, 4.6, 0.7), 22, 7, 0xffd27a, new THREE.Vector3(0, 0.3, 0.4), 1.1, 0.5, 12);
+        this.fx.ring(f.pos.x, f.pos.y, 0xffe0a0, 4.6, 0.5, 0.09);
+        if (f.isPlayer) {
+          this.trauma = Math.min(1, this.trauma + 0.3);
+          this.camBump = Math.max(this.camBump, 0.22);
+          this.fovKick = -4;
+        }
+        break;
+      }
+      case 'rev': {
+        // the piston rev: a pneumatic bark, sparks off the fists and the chest reactor pulsing harder
+        this.sfx.pyro(0.3);
+        this.sfx.crackle(0.5);
+        f.glowBoost = Math.max(f.glowBoost, 3);
+        for (const sx of [1, -1]) this.fx.spark(at(sx * 0.7, 2.6, -0.2), 9, 4, 0xffb45a, new THREE.Vector3(0, -0.3, 0), 0.7, 0.4, 6);
+        if (f.isPlayer) this.trauma = Math.min(1, this.trauma + 0.12);
+        break;
+      }
+      case 'roar': {
+        // standing out of the rev: the machine roars and the house answers
+        this.sfx.hit(0.4);
+        this.sfx.cheer(1);
+        this.sfx.pyro(0.5);
+        this.fx.ring(f.pos.x, f.pos.y, 0xffb45a, 5.4, 0.55, 0.09);
+        this.fx.spark(at(0, 0.3, 0), 18, 4.5, 0x9aa8c0, undefined, 1.2, 0.5, 7);
+        this.crowdRoar(0.8, 2.2);
+        break;
+      }
+    }
   }
 
   /** the moment both arms lock overhead in the Zeus taunt: a shockwave, sparks off the fists, lights flare */
@@ -1879,8 +2001,28 @@ export class Game {
    * (there is nothing to close), a real step-in while the enemy is still out of punching range.
    */
   private punchStepOf(f: Fighter, o: Fighter) {
-    const none = { foot: -1, z: 0, x: 0, dur: 0.18, seq: -1 };
+    const none = { foot: -1, z: 0, x: 0, dur: 0.18, seq: -1, lift: undefined as number | undefined };
     const m = f.move;
+    // ---- GET-UP FOOTWORK ----
+    // Two plants, on the beat of the rise: the rear foot comes up under the hips first (that is the one the knee
+    // tuck hands the weight to), then the lead foot squares the stance. The steps are slow and high so they read as
+    // a machine heaving itself upright, not as a shuffle. The balance steps in robot.ts are muted while he is down.
+    if (f.state === 'down') {
+      const want = f.riseU > 0.64 ? 2 : f.riseU > 0.38 ? 1 : 0;
+      if (want > f.riseSteps) {
+        f.riseSteps = want;
+        const foot = want === 1 ? 1 : 0;
+        return {
+          foot,
+          z: foot === 1 ? -0.05 : -0.22, // first step tucks the rear foot in, second brings the lead foot under him
+          x: foot === 1 ? 0.12 : 0.06,
+          dur: 0.3,
+          seq: 900 + want,
+          lift: 0.2,
+        };
+      }
+      return none;
+    }
     if (f.state !== 'attack' || !m) return none;
     if (f.moveT < m.strikeAt * 0.4) return none; // wind-up / feint: the feet do not commit yet
     const foot = this.armOf(f, m) === 1 ? 1 : 0;
@@ -1891,7 +2033,7 @@ export class Game {
     const x = (foot === 0 ? -0.05 : 0.07) * (0.5 + far * 0.8); // a small pivot towards the centre line
     // the foot has to land on the same beat as the fist (the move clock runs at PACE × tscale, faster out of a dodge)
     const dur = THREE.MathUtils.clamp(((m.impact - m.strikeAt * 0.4) * PACE * f.tscale) / Math.max(1, f.atkSpd), 0.1, 0.34);
-    return { foot, z, x, dur, seq: f.moveSeq };
+    return { foot, z, x, dur, seq: f.moveSeq, lift: undefined as number | undefined };
   }
 
   /**
@@ -2658,7 +2800,11 @@ export class Game {
       this.startMove(f, id);
       st.cool = 0.18 + Math.random() * 0.4;
     } else if (dist > 7 && Math.random() < dt * 1.5) {
-      this.taunt(f, Math.random() < 0.5 ? 1 : 0); // showboat while there is nobody to hit
+      // showboat while there is nobody to hit — it pulls from the whole book, but it never picks a long one while
+      // you are anywhere near enough to punish it
+      const book = dist > 9.5 ? FREESTYLE : FREESTYLE.filter((fs) => fs.dur <= 2.0);
+      const pick = book[Math.floor(Math.random() * book.length)];
+      this.taunt(f, pick.id);
       st.cool = 1.2;
     }
   }
@@ -2689,14 +2835,12 @@ export class Game {
       if (f.state !== 'idle' || f.dodgeT > 0) f.tauntT = 0;
       else {
         const was = f.tauntT;
+        const fs = FREESTYLE[THREE.MathUtils.clamp(f.tauntStyle, 0, FREESTYLE.length - 1)];
         f.tauntT -= dt;
-        // the belt-raise takes longer, so it pays a bit more meter overall
-        f.meter = Math.min(100, f.meter + (f.tauntStyle === 1 ? 14 : 16) * dt);
-        if (f.tauntStyle === 1) {
-          if (was > 1.14 && f.tauntT <= 1.14) this.tauntRaise(f); // arms lock overhead
-        } else {
-          for (const beat of [1.12, 0.72]) if (was > beat && f.tauntT <= beat) this.tauntBeat(f);
-        }
+        // a show-off banks Overdrive — the longer and prouder the move, the more it pays
+        f.meter = Math.min(100, f.meter + fs.meter * dt);
+        // the beats of the move fire off its own progress clock, so sound, sparks and camera always land together
+        for (const c of fs.cues) if (was > (1 - c.p) * fs.dur && f.tauntT <= (1 - c.p) * fs.dur) this.fsCue(f, c.s);
         if (f.tauntT <= 0) f.softT = Math.max(f.softT, 0.35);
       }
     }
@@ -2756,14 +2900,26 @@ export class Game {
       }
     } else if (f.state === 'down') {
       f.downT -= dt;
-      f.fallT = f.downT > 0.75 ? 1 : 0; // target for the fall spring (lying → getting up)
+      // THE GET-UP. He lies still for a beat after the landing, then rolls onto one shoulder, plants that hand,
+      // tucks a knee under the hips and pushes up — the hips lead, the torso follows, the head is the first thing
+      // to come up. `riseStages` (poses.ts) owns the shape of it; robot receives `riseU` and does the rest, so the
+      // whole move is one continuous curve instead of a body rotating stiffly up off the floor.
+      const du = 1 - THREE.MathUtils.clamp(f.downT / Math.max(0.001, f.downDur), 0, 1); // 0 on landing
+      const RISE_AT = 0.3; // how much of the time on the floor is spent flat out
+      f.riseU = THREE.MathUtils.clamp((du - RISE_AT) / (1 - RISE_AT), 0, 1);
+      f.fallT = 1; // the plain fall spring stays down: the rise is the staged animation, not a spring release
       if (f.downT <= 0) {
         f.state = 'idle';
         f.fallT = 0;
+        f.fallS.set(0); // the lie is already fully unwound by riseU = 1 — no spring lag on the way out
+        f.fallS.v = 0;
+        f.riseU = 1;
+        f.riseOut = 1; // the settle: the shoulders shake out and the stance settles over the next half second
         f.wakeT = 0.3;
         f.softT = 1.0;
       }
     }
+    f.riseOut = Math.max(0, f.riseOut - dt / 0.55);
     if (f.state === 'ko') f.fallT = 1;
     const airborne = f.state === 'air' || (f.state === 'ko' && (f.y > 0 || f.vy !== 0));
     if (airborne) this.updateAir(f, dt);
@@ -2888,7 +3044,15 @@ export class Game {
       f.vy = 0;
       if (f.state === 'air') {
         f.state = 'down';
-        f.downT = 1.4 * (f.isPlayer ? 1 : 1 / (1 + (this.iq - 1) * 0.06)); // and gets up sooner after a knockdown
+        // the knockdown bank: a beat flat out, then the staged rise (the AI gets up a touch sooner at high IQ)
+        f.downDur = 1.8 * (f.isPlayer ? 1 : 1 / (1 + (this.iq - 1) * 0.06));
+        f.downT = f.downDur;
+        f.riseU = 0;
+        f.riseOut = 0;
+        f.riseSteps = 0;
+        // which shoulder he rolls onto: the side the fight is on, so the roll brings him up facing his man
+        const to = this.toward(f, f.isPlayer ? this.enemy : this.player);
+        f.riseDir = to.x * Math.cos(f.yaw) - to.y * Math.sin(f.yaw) >= 0 ? 1 : -1;
         f.fallT = 1;
         f.fallS.set(Math.min(1, f.tilt / 1.5));
         f.fallS.v = 1.2;
@@ -3500,9 +3664,18 @@ export class Game {
       dp = 0.05;
       kk = 20;
     } else if (f.state === 'down') {
-      a0 = a1 = LIMP;
-      ln = 0;
-      dp = 0;
+      // KNOCK-DOWN & GET-UP: the whole rise is one continuous curve — he lies limp, rolls onto one shoulder,
+      // plants that hand and pushes, swings the free arm across for momentum, and hands the arms back to the guard
+      // as he comes up. The body, hips, head and legs read the same staging curves (riseStages), so nothing fights.
+      const rb = riseArms(f.riseU, f.riseDir);
+      a0 = rb.a0;
+      a1 = rb.a1;
+      tw = rb.tw;
+      ln = rb.ln;
+      lg = 0;
+      dp = rb.dp;
+      rl = rb.rl;
+      kk = rb.kk;
     } else if (f.state === 'stagger') {
       const fl = Math.sin(t * 22) * 0.12;
       a0 = { ...STAGGER, sz: STAGGER.sz + fl, sx: STAGGER.sx - fl };
@@ -3527,43 +3700,31 @@ export class Game {
       lg = s.lunge * (f.runStrike ? 1.3 : 1) * (f.aim === AIM_BODY ? 0.94 : 1);
       dp = s.dip + (this.aimsLow(f, m) ? 0.1 : 0); // and you sit down into a body shot
       kk = 75;
-    } else if (f.tauntT > 0 && f.tauntStyle === 1) {
-      // ZEUS BELT-RAISE: crouch and grip an invisible belt at the waist, HEAVE both arms overhead into a wide V,
-      // then hold it — chest out, leaning back, head tilted up at the lights. Pure arrogance.
-      const u = 1 - f.tauntT / Math.max(0.001, f.tauntDur);
-      const seg = (a: number, bb: number) => THREE.MathUtils.clamp((u - a) / (bb - a), 0, 1);
-      const S = (x: number) => x * x * (3 - 2 * x);
-      const up = S(seg(0.2, 0.5)) * (1 - S(seg(0.86, 1))); // 0 → 1 as the arms go overhead, back to 0 at the end
-      const grip = S(seg(0, 0.16)) * (1 - S(seg(0.16, 0.34))); // the low "grab the belt" dip
-      const shake = Math.sin(u * Math.PI * 7) * 0.05 * up; // a proud shake once they are up there
-      // arms: fists at the waist → straight overhead, spread into a V
-      const sx = lerp(-0.25 + grip * 0.22, -2.92 + shake, up);
-      const sz = lerp(0.22, 0.6, up);
-      const ex = lerp(-1.95 - grip * 0.35, -0.3, up);
-      a0 = P(sx, -0.25, sz, ex);
-      a1 = P(sx, -0.25, sz, ex);
-      ln = grip * 0.3 - up * 0.62; // crouch forward to grip, then lean way back (this also tips the head up)
-      dp = 0.1 + grip * 0.26 - up * 0.08;
-      tw = Math.sin(u * Math.PI * 2) * 0.07 * up;
-      rl = Math.sin(u * Math.PI * 3.5) * 0.04 * up;
-      kk = 30;
     } else if (f.tauntT > 0) {
-      // CHEST POUND: arms thrown wide, then both fists hammer the chest twice, chest puffed out, head high.
+      // FREESTYLE: one beat of a move from the book (poses.ts). Which move it is only changes what the curves do —
+      // the rig, the springs and the return to the guard are identical for all of them.
       const u = 1 - f.tauntT / Math.max(0.001, f.tauntDur);
-      const beat = (c: number, w: number) => Math.max(0, 1 - Math.abs(u - c) / w); // 1 at the impact, 0 away from it
-      const hit = Math.max(beat(0.26, 0.16), beat(0.52, 0.16));
-      const open = Math.max(beat(0.1, 0.12), beat(0.4, 0.1), beat(0.78, 0.22));
-      // arms: wide and high when open, slammed onto the chest on the beats
-      const sx = lerp(-0.55, -2.0, open) + hit * 0.55;
-      const sz = lerp(0.35, 1.45, open) - hit * 1.25;
-      const ex = lerp(-1.1, -2.0, open) - hit * 0.7;
-      a0 = P(sx, -0.5 - hit * 0.5, sz, ex);
-      a1 = P(sx, -0.5 - hit * 0.5, sz, ex);
-      ln = -0.3 - open * 0.18 + hit * 0.3; // chest out, snapping forward on each thump
-      dp = 0.1 + hit * 0.16;
-      rl = Math.sin(u * Math.PI * 4) * 0.05;
-      tw = Math.sin(u * Math.PI * 2) * 0.12;
-      kk = 42;
+      const fb = freestylePose(f.tauntStyle, u, t);
+      a0 = fb.a0;
+      a1 = fb.a1;
+      tw = fb.tw;
+      ln = fb.ln;
+      dp = fb.dp;
+      rl = fb.rl;
+      kk = fb.kk;
+    } else if (f.riseOut > 0 && !f.blocking) {
+      // THE SETTLE: the half second after standing up. The shoulders shake the last of the roll out of them, the
+      // chest dips and comes back, and the guard closes a beat late — a fighter getting up, not a rig snapping
+      // back to its idle frame.
+      const o = 1 - f.riseOut / 0.55; // 0 → 1 across the settle
+      const shake = Math.sin(o * Math.PI * 3) * (1 - o);
+      a0 = lerpPose(GUARD, P(-0.5, -0.62, 0.3, -1.7), (1 - o) * 0.7);
+      a1 = lerpPose(GUARD, P(-0.5, -0.38, 0.3, -1.7), (1 - o) * 0.7);
+      tw = shake * 0.22;
+      ln = 0.08 + (1 - o) * 0.14 - shake * 0.05;
+      dp = 0.12 + (1 - o) * 0.14;
+      rl = shake * 0.09;
+      kk = 26;
     } else if (f.mode === 'taunt') {
       const pump = Math.sin(t * 3.2) * 0.5 + 0.5;
       const tp: Pose = { ...TAUNT, sx: TAUNT.sx - pump * 0.4, ex: TAUNT.ex + pump * 0.5 };
@@ -3717,6 +3878,12 @@ export class Game {
         punchX: pw.x,
         punchDur: pw.dur,
         punchSeq: pw.seq,
+        stepLift: pw.lift,
+        // the get-up is only declared while he is actually on the canvas: standing, the staged weights are gone
+        // and the ordinary rig takes the body back (see robot.ts)
+        rise: f.state === 'down' ? f.riseU : undefined,
+        riseDir: f.riseDir,
+        riseOut: f.riseOut,
         strike,
         strikePow,
       },

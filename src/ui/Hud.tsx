@@ -223,8 +223,10 @@ export function Hud({ h, touch }: { h: HudState; touch: boolean }) {
             <Hint k="SPACE">dodge ◎ (tahan = blok)</Hint>
             <Hint k="R">overdrive</Hint>
             <Hint k="E">ippo</Hint>
-            <Hint k="M">taunt</Hint>
-            <Hint k="N">taunt juara</Hint>
+          </div>
+          <div>
+            <Hint k="M N B">pound · sabuk · gulir</Hint>
+            <Hint k="U I Y O">lambai · kabel · kincir · piston</Hint>
           </div>
           <div>
             <Hint k="[ ]">footwork</Hint>
@@ -306,7 +308,7 @@ export function TouchControls({ game }: { game: Game | null }) {
         <div className="absolute left-0 -top-[68px]"><TouchBtn game={game} code="Space" label="DODGE / BLOK" className="bg-emerald-500/50 text-[9px]" size="h-14 w-14" /></div>
         <div className="absolute left-[76px] -top-[68px]"><TouchBtn game={game} code="KeyR" label="OD" className="bg-amber-400/60" size="h-14 w-14" /></div>
         <div className="absolute left-[152px] -top-[68px]"><TouchBtn game={game} code="KeyE" label="IPPO" className="bg-cyan-400/50 text-[10px]" size="h-14 w-14" /></div>
-        <div className="absolute left-[76px] -top-[136px]"><TouchBtn game={game} code="KeyN" label="★" className="bg-yellow-400/50" size="h-12 w-12" /></div>
+        <div className="absolute left-[76px] -top-[136px]"><TouchBtn game={game} code="Freestyle" label="GAYA" className="bg-yellow-400/50 text-[10px]" size="h-12 w-12" /></div>
       </div>
     </div>
   );

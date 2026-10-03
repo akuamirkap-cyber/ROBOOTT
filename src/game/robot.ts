@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Spring } from './spring';
 import { buildRobot, ATOM_OPT, BRUTE_OPT } from './build';
 import { L1, L2, HIP_Y, UP } from './rig';
+import { riseStages } from './poses';
 
 export interface Pose {
   sx: number; // shoulder pitch (negative = raise forward)
@@ -57,6 +58,11 @@ export interface AnimState {
   punchSeq?: number; // strike id: a NEW number re-plants the foot once (jab, jab, jab → one plant each)
   strike?: number; // 0..1: how close the punch is to leaving the guard (1 = released). Drives the eye optics.
   strikePow?: number; // 0..1 weight of that punch — a heavy hook fires a bigger optical flash than a jab
+  // GET-UP (only present while he is on the floor): the staged rise — see riseStages in poses.ts
+  rise?: number; // 0 = still flat on the canvas, 1 = back on his feet
+  riseDir?: number; // ±1: the shoulder he rolls onto and pushes off
+  riseOut?: number; // 1 → 0 over the beat after he stands: the loose settle (shoulders shake out, chest drops)
+  stepLift?: number; // optional foot clearance for a scripted step (the get-up plants its feet high and slow)
 }
 
 
@@ -265,11 +271,15 @@ export class Robot {
    * Floor contact: if any part of the body is below the floor, lift the whole body by exactly that much.
    * (Planted feet are handled by the IK; this catches falls, knock-downs, air poses and animation overshoot.)
    */
-  private groundSolve(S: number, ik: number) {
+  private groundSolve(S: number, ik: number, floorPose = false) {
     this.root.updateMatrixWorld(true);
     let minY = Infinity;
     for (const pr of this.probes) {
-      if (pr.foot && ik > 0.85) continue;
+      // once the IK owns the feet the foot probes are its business. ON THE FLOOR it is the other way round: the
+      // get-up re-plants its feet while the body is still folded over them, the legs run out of reach and a boot
+      // would dig through the canvas — so there the boot probes stay live, and the small lift they ask for only
+      // gives the IK more slack.
+      if (pr.foot && ik > 0.85 && !floorPose) continue;
       this.tv.copy(pr.p).applyMatrix4(pr.parent.matrixWorld);
       if (this.tv.y < minY) minY = this.tv.y;
     }
@@ -554,7 +564,7 @@ export class Robot {
           f.tz = ideal[pf].z + z;
           // a re-plant is short and low: the step of a fighter, not of a marcher
           f.dur = clamp(a.punchDur ?? 0.19, 0.1, 0.32) * (1 + this.tapT * 0.35);
-          f.lift = 0.06 + Math.min(0.09, Math.abs(z) * 0.07);
+          f.lift = a.stepLift ?? 0.06 + Math.min(0.09, Math.abs(z) * 0.07);
           f.err = 0;
           this.punchYaw = clamp((a.punchX ?? 0) * 1.1, -0.28, 0.28);
           planted = true;
@@ -563,8 +573,10 @@ export class Robot {
       if (!planted) {
         let pick = -1;
         let best = 0;
-        // while a flicked key is still cooling down, only a real imbalance may trigger a step
-        const thr = (this.postDashT > 0 ? 0.5 : 0.9) + this.tapT * 0.5;
+        // while a flicked key is still cooling down, only a real imbalance may trigger a step.
+        // ON THE FLOOR the balance steps are OFF altogether: the feet stay exactly where the knock-down left them
+        // (a fighter does not shuffle his boots around while he is on his back) — the get-up re-plants them itself.
+        const thr = a.rise !== undefined ? 1e9 : (this.postDashT > 0 ? 0.5 : 0.9) + this.tapT * 0.5;
         const messy = Math.max(this.feet[0].err, this.feet[1].err) > 1.9; // badly off balance → step now, quietly
         for (let i = 0; i < 2; i++) {
           const f = this.feet[i];
@@ -792,7 +804,22 @@ export class Robot {
     const S = this.root.scale.x;
     const yaw = this.root.rotation.y;
     const e = clamp(a.fall, 0, 1.06);
-    const ikTarget = (1 - clamp(a.air, 0, 1)) * (1 - sm(Math.min(1, e * 1.8)));
+    // ---- GET-UP STAGING (poses.ts owns the curves) ----
+    // The knock-down is one solid pose; the rise is not. The legs come back under the body first (the hips lead
+    // the push), the torso is the last part of the lie to leave the canvas, and the whole thing rolls onto one
+    // shoulder on the way through — so `e` is no longer used raw, it is split into a leg weight and a torso
+    // weight with the stage curves on top. Both weights are exactly zero at rise = 1, which is what lets the
+    // game drop the get-up and hand the body straight back to the ordinary standing rig without a pop.
+    const riseU = clamp(a.rise ?? 0, 0, 1);
+    const riseDir = (a.riseDir ?? 1) < 0 ? -1 : 1;
+    const rs = riseStages(riseU);
+    const riseOut = clamp(a.riseOut ?? 0, 0, 1);
+    const eIk = clamp(e * (1 - rs.hipUp), 0, 1.06); // the legs unweight the floor early
+    const eSpan = clamp(e * (1 - rs.unroll) * (1 - rs.hipUp * 0.3), 0, 1.06); // the torso unfolds late, and softly
+    // ...and it does not unwind straight to zero: it passes through a deep forward fold, chest over the knees,
+    // which is the shape a real stand-up has. `fold` peaks around two thirds of the way up and is gone at both ends.
+    const eFold = rs.fold * 0.62 * (0.55 + 0.45 * (1 - eSpan));
+    const ikTarget = (1 - clamp(a.air, 0, 1)) * (1 - sm(Math.min(1, eIk * 1.8)));
     this.ikW += (ikTarget - this.ikW) * (1 - Math.exp(-(ikTarget > this.ikW ? 5 : 14) * dt));
     const ik = this.ikW;
     this.airW += (clamp(a.air, 0, 1) - this.airW) * (1 - Math.exp(-11 * dt));
@@ -881,10 +908,30 @@ export class Robot {
     // soft limit: the reach cap can no longer introduce a kink in the vertical motion
     const hipH = this.sHip.update(softMin(hd, cap, 0.12), rw > 0.3 ? 17 : this.dashOn || gw > 0.5 ? 10 : 15, 0.9, dt);
     const yIK = hipH - HIP_Y - UP + a.hitUp * 0.42 - Math.max(0, -hF) * hMag * 0.16;
-    const tipE = clamp(e + a.tilt / 1.5, 0, 1.06);
-    const yFall = lerp(0.1, 0.78, sm(Math.min(1, tipE)));
-    this.body.position.set(bodyX, lerp(yFall, yIK + fw.bob + land, ik), bodyZ);
-    this.body.rotation.set(a.lean * 0.3 + leanA * 0.4 + hPitch * 0.4 - e * 1.5 - a.tilt, 0, a.roll + rollA * 0.5 + hRoll * 0.45);
+    const tipE = clamp(eSpan + a.tilt / 1.5, 0, 1.06);
+    // Height of the body pivot while he is on the canvas. It is deliberately LOW: the floor solver (groundSolve)
+    // then lifts the body by exactly the amount its lowest surface needs, so he really rests ON the canvas instead
+    // of hanging above it. (It used to ask for 0.78, which left the whole torso floating ~0.7 above the floor,
+    // propped up on one boot — that was a large part of why the knock-down and the get-up looked wrong.)
+    const yFall = lerp(0.04, 0.2, sm(Math.min(1, tipE)));
+    // ---- the staged rise, layered on top of the lie ----
+    // `side` peaks about a third of the way in: he rolls off his back onto one shoulder, the hips slide across over
+    // the planted hand, the body drifts forward over the knees, and the last beat dips so the rise LANDS.
+    const riseX = riseDir * 0.3 * rs.side;
+    // every staged term below is scaled to vanish at BOTH ends of the rise (a term that survived to rise = 1 would
+    // pop out of the pose the instant the game hands the body back to the ordinary rig)
+    const riseZ = rs.tuck * 0.14 - rs.tall * 0.05 * (1 - riseU);
+    const riseY = -rs.bounce * 0.16 - riseOut * 0.05;
+    // turning a lying body about its own spine reads exactly as the log-roll onto the side; as the pitch unwinds
+    // the very same channel becomes the twist that squares him back up to the enemy
+    const riseYaw = riseDir * 0.95 * rs.side + Math.sin(t * 7) * 0.03 * riseOut;
+    const riseRoll = riseDir * 0.2 * rs.side;
+    this.body.position.set(bodyX + riseX, lerp(yFall, yIK + fw.bob + land, ik) + riseY, bodyZ + riseZ);
+    this.body.rotation.set(
+      a.lean * 0.3 + leanA * 0.4 + hPitch * 0.4 - eSpan * 1.5 + eFold - a.tilt,
+      riseYaw,
+      a.roll + rollA * 0.5 + hRoll * 0.45 + riseRoll,
+    );
     const breathe = Math.sin(t * 2.4) * 0.015;
     // chest/waist cancel the hip turn so the upper body keeps facing the opponent
     // pelvis and chest counter-rotate (net chest yaw = -0.5 × pelvis yaw) and the chest stays level over the pelvis dip
@@ -898,7 +945,10 @@ export class Robot {
 
     // head: lags the chest and counter-rotates to keep eyes on the opponent
     const hSnap = 0.25 + hPt * 1.15; // a head shot whips the neck, a body shot barely turns it
-    const hx = this.sHeadX.update(-0.06 - a.lean * 0.5 + e * 0.3 - leanA * 0.3 + hPitch * hSnap - hUp * 0.3 * hMag, 5.4, 0.45, dt);
+    // ...and during the get-up the head leads the whole move: chin tucked while he is flat, lifted early so he is
+    // already looking at you before the torso arrives, then a small nod as he settles into the stance.
+    const hRise = eSpan * 0.3 - rs.hipUp * 0.34 * (1 - rs.unroll) - eFold * 0.55 + rs.bounce * 0.1 - riseOut * 0.06 * Math.sin(t * 11);
+    const hx = this.sHeadX.update(-0.06 - a.lean * 0.5 + hRise - leanA * 0.3 + hPitch * hSnap - hUp * 0.3 * hMag, 5.4, 0.45, dt);
     const hy = this.sHeadY.update(-a.twist * 0.72 - lag * 0.5 + hYaw * (0.6 + hPt * 0.9), 5.6, 0.5, dt);
     const hz = this.sHeadZ.update(-rollA * 0.4 + hRoll * (0.4 + hPt * 0.8), 5.2, 0.5, dt);
     this.neck.rotation.set(hx * 0.45, hy * 0.5, hz * 0.5);
@@ -1075,9 +1125,16 @@ export class Robot {
       const fallHx = -0.12 * s;
       const fallKx = 0.15;
       const am = this.airW;
-      const fkHx = lerp(fallHx, airHx, am);
-      const fkKx = lerp(fallKx, airKx, am);
-      const fkHz = lerp(s * 0.12, s * 0.2, am);
+      // GET-UP: while the body is still on the canvas one knee tucks in under the hips — that is the leg he comes
+      // up on — and the other straightens and swings round behind it. The weight fades out as the IK takes the
+      // legs back (~rise 0.4), so the tuck hands over to real planted feet instead of fighting them.
+      const tuckW = rs.tuck * (1 - ik);
+      const lead = riseDir > 0 ? 0 : 1;
+      const leadW = i === lead ? tuckW : 0;
+      const trailW = i === lead ? 0 : tuckW;
+      const fkHx = lerp(fallHx, airHx, am) - 0.95 * leadW + 0.3 * trailW;
+      const fkKx = lerp(fallKx, airKx, am) + 1.5 * leadW + 0.45 * trailW;
+      const fkHz = lerp(s * 0.12, s * 0.2, am) + s * 0.28 * tuckW;
 
       const hxF = lerp(fkHx, ikHx, ik);
       const kxF = lerp(fkKx, kx, ik);
@@ -1099,7 +1156,11 @@ export class Robot {
         this.qf.slerp(this.qd, f.follow);
       }
       if (ik < 1) {
-        this.qd.setFromEuler(this.eu.set(0.25, 0, 0, 'XYZ'));
+        // Off the feet (in the air, knocked down, getting up) the boot stops chasing the floor: it hangs off the
+        // shin the way a relaxed foot does — toes up while he is down, pointed while he is in the air. The old
+        // version blended towards a WORLD orientation, which left the boots pointing straight at the canvas and
+        // the whole robot propped up on a toe.
+        this.qd.setFromEuler(this.eu.set(-0.3 + am * 0.55, 0, 0, 'XYZ'));
         this.qf.slerp(this.qd, 1 - ik);
       }
       this.footJ[i].quaternion.copy(this.qf);
@@ -1109,9 +1170,9 @@ export class Robot {
     }
 
     // last step: nothing may ever sink below the floor (falls, knock-downs, overshoot, odd poses)
-    this.groundSolve(S, ik);
+    this.groundSolve(S, ik, a.rise !== undefined);
 
-    const gl = (0.85 + a.glow * 0.7 + Math.sin(t * 3) * 0.12) * (1 - e * 0.85);
+    const gl = (0.85 + a.glow * 0.7 + Math.sin(t * 3) * 0.12) * (1 - eSpan * 0.85);
     for (const m of this.glowMats) m.emissiveIntensity = gl;
     for (const m of this.bodyMats) m.emissiveIntensity = a.flash * 0.5;
   }

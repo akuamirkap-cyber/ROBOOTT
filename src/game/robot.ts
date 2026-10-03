@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Spring } from './spring';
 import { buildRobot, ATOM_OPT, BRUTE_OPT } from './build';
 import { L1, L2, HIP_Y, UP } from './rig';
+import { riseStages } from './poses';
 
 export interface Pose {
   sx: number; // shoulder pitch (negative = raise forward)
@@ -32,7 +33,12 @@ export interface AnimState {
   yawRate: number;
   hit: number;
   hitSign: number;
-  hitUp: number;
+  hitUp: number; // vertical part of the blow: an uppercut lifts him (+), a body shot folds him (−)
+  // THE GEOMETRY OF THE HIT (optional): the recoil is built from where the fist came from and where it landed.
+  hitF?: number; // + = the force drives him forward, − = he is knocked backwards (his own frame)
+  hitL?: number; // + = the force drives him across to his own left
+  hitPt?: number; // 1 = the impact point was the head, 0 = the chest plate
+  hitSpin?: number; // yaw torque: an angled / hooking shot twists him round
   fall: number;
   air: number;
   time: number;
@@ -44,6 +50,19 @@ export interface AnimState {
   dashL: number;
   lookX?: number; // target gaze direction X (-1 to 1)
   lookY?: number; // target gaze direction Y (-1 to 1)
+  // PUNCH FOOTWORK (all optional: callers that don't fight on the feet simply leave them out)
+  punchFoot?: number; // -1 = no strike, 0 = the lead (left) foot re-plants, 1 = the rear (right) foot re-plants
+  punchZ?: number; // how far that foot reaches towards the enemy (robot-local units, + = forward)
+  punchX?: number; // lateral part of the same re-plant (+ = the robot's left)
+  punchDur?: number; // how long the re-plant takes (s)
+  punchSeq?: number; // strike id: a NEW number re-plants the foot once (jab, jab, jab → one plant each)
+  strike?: number; // 0..1: how close the punch is to leaving the guard (1 = released). Drives the eye optics.
+  strikePow?: number; // 0..1 weight of that punch — a heavy hook fires a bigger optical flash than a jab
+  // GET-UP (only present while he is on the floor): the staged rise — see riseStages in poses.ts
+  rise?: number; // 0 = still flat on the canvas, 1 = back on his feet
+  riseDir?: number; // ±1: the shoulder he rolls onto and pushes off
+  riseOut?: number; // 1 → 0 over the beat after he stands: the loose settle (shoulders shake out, chest drops)
+  stepLift?: number; // optional foot clearance for a scripted step (the get-up plants its feet high and slow)
 }
 
 
@@ -57,8 +76,8 @@ const STAND_Y = 2.88 + UP * 0.95 + 0.3; // relaxed hip height: knees softly bent
  * The previous approximation under-lifted the foot, which pushed the toe through the floor.
  */
 const SOLE = 0.21;
-const TOE_Z = 1.27;
-const HEEL_Z = 0.55;
+const TOE_Z = 1.24;
+const HEEL_Z = 0.62;
 const ankleLift = (p: number) => Math.max(0, Math.max(SOLE * Math.cos(p) + TOE_Z * Math.sin(p), SOLE * Math.cos(p) - HEEL_Z * Math.sin(p)) - SOLE);
 const RUN_HIP_LOW = 3.3; // hip height in mid-stance while running (standing ≈ 3.6): knees flexed ~60°
 const RUN_HIP_BOB = 0.2; // how much higher the hips travel at touch-down / toe-off / flight
@@ -88,6 +107,9 @@ interface Foot {
   stT: number; // time since touchdown (gait stance progress)
   gaitStep: boolean; // current swing belongs to the walk cycle
   shuffle: boolean; // current swing is part of a boxing dash shuffle
+  punchStep: boolean; // current swing is a strike re-plant (the foot follows the punching hand)
+  tx: number; // local target of a strike re-plant
+  tz: number;
   p0: number; // foot pitch at the moment it left the ground (the swing blends from here → no pop at toe-off)
   follow: number; // 0..1: how much the foot hangs with the shin instead of staying level (mid-swing)
 }
@@ -116,14 +138,21 @@ export class Robot {
   readonly eyeScanners: THREE.Mesh[] = [];
   readonly eyeFlares: THREE.Mesh[] = [];
   readonly eyeLights: THREE.PointLight[] = [];
+  readonly eyeIris: THREE.Mesh[] = []; // the glowing iris plate (atom head)
+  readonly eyePulses: THREE.Mesh[] = []; // lock-on ring fired the instant a punch leaves the guard
+  readonly eyeBeams: THREE.Mesh[] = []; // additive motion streak thrown forward with the punch
   private eyeLookX = 0;
   private eyeLookY = 0;
+  private eyeFire = 0; // strike-optics one-shot envelope (1 = just released, 0 = settled)
+  private strikeCharge = 0; // last frame's punch charge, so the release is caught on the exact frame
+  private eyeBase = new THREE.Color(0xffffff); // style glow colour, before any flash whitens it
+  private eyeWhite = new THREE.Color(0xffffff);
   private glowMats: THREE.MeshStandardMaterial[] = [];
   private bodyMats: THREE.MeshStandardMaterial[] = [];
   onStep?: (foot: number, speed: number, x: number, z: number) => void;
 
   // procedural footwork
-  private feet: Foot[] = [0, 1].map(() => ({ x: 0, z: 0, fx: 0, fz: 0, stepping: false, u: 0, dur: 0.2, lift: 0, err: 0, pitch: 0, curX: 0, curZ: 0, lag: 0, yawOff: 0, stT: 0, gaitStep: false, shuffle: false, p0: 0, follow: 0 }));
+  private feet: Foot[] = [0, 1].map(() => ({ x: 0, z: 0, fx: 0, fz: 0, stepping: false, u: 0, dur: 0.2, lift: 0, err: 0, pitch: 0, curX: 0, curZ: 0, lag: 0, yawOff: 0, stT: 0, gaitStep: false, shuffle: false, punchStep: false, tx: 0, tz: 0, p0: 0, follow: 0 }));
   private needSnap = true;
   private ikW = 1;
   private airW = 0; // smoothed 'airborne' weight so leg poses blend instead of snapping
@@ -150,6 +179,16 @@ export class Robot {
   private back = false;
   private stepDist = 0;
   private nextFoot = 0;
+  // A short tap of a movement key must not read as a full stride: `moveT` measures how long the body has actually
+  // been moving, `movePeak` how fast that burst got, and `tapT` is the "that was only a tap" window that follows.
+  private moveT = 0;
+  private movePeak = 0;
+  private tapT = 0;
+  private punchSeq = -1; // last strike that already re-planted a foot (so one strike = one re-plant)
+  private prevSpd = 0; // last frame's speed: a hard drop means the key is already gone (a tap, not a hold)
+  private dipK = 0.12; // smoothed stance inputs: a punch or a landing spikes dip/lunge, and the stance must not jerk
+  private lungeK = 0;
+  private punchYaw = 0; // the pivot the current re-plant turns the foot through
   private feetL = [
     { x: 0, z: 0, y: 0 },
     { x: 0, z: 0, y: 0 },
@@ -200,6 +239,7 @@ export class Robot {
     this.body.add(this.pelvis);
 
     const core = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 2.4, roughness: 0.3 });
+    this.eyeBase.setHex(style.glow);
 
     buildRobot(this, { main, sec, dark, steel, accent, glow, joint, rubber, visor, core, style }, atom ? ATOM_OPT : BRUTE_OPT);
     this.addProbes();
@@ -214,16 +254,16 @@ export class Robot {
     const P = (o: THREE.Object3D, pts: number[][], foot = false) => pts.forEach(([x, y, z]) => this.addProbe(o, x, y, z, foot));
     P(this.chest, [[0.9, 0.1, -1.0], [-0.9, 0.1, -1.0], [0.9, 1.5, -1.0], [-0.9, 1.5, -1.0], [0, 0.8, -1.05], [0.9, 1.2, 0.75], [-0.9, 1.2, 0.75], [0, 0.3, 0.6], [1.2, 1.4, 0], [-1.2, 1.4, 0]]);
     P(this.head, [[0, 0.72, -0.05], [0, -0.45, 0.35], [0.45, 0.1, 0], [-0.45, 0.1, 0], [0, 0.1, -0.5], [0, 0.1, 0.47]]);
-    P(this.pelvis, [[1.0, 2.7, -0.55], [-1.0, 2.7, -0.55], [1.0, 2.7, 0.55], [-1.0, 2.7, 0.55], [0, 2.55, -0.5], [0, 2.55, 0.5]]);
+    P(this.pelvis, [[1.09, 2.85, -0.52], [-1.09, 2.85, -0.52], [1.09, 2.85, 0.52], [-1.09, 2.85, 0.52], [0, 2.22, -0.42], [0, 2.22, 0.42], [0.66, 3.3, 0.44], [-0.66, 3.3, 0.44], [0.56, 2.9, -0.62], [-0.56, 2.9, -0.62]]);
     for (let i = 0; i < 2; i++) {
       P(this.caps[i], [[0, -0.5, 0], [0, 0.15, 0.78], [0, 0.15, -0.78], [0.72, 0.1, 0], [-0.72, 0.1, 0]]);
       P(this.shoulders[i], [[0.5, -0.6, 0], [-0.5, -0.6, 0], [0, -0.6, 0.5], [0, -0.6, -0.5]]);
       P(this.elbows[i], [[0.5, -0.55, 0], [-0.5, -0.55, 0], [0, -0.55, 0.5], [0, -0.55, -0.5], [0, 0, -0.36]]);
       P(this.fists[i], [[0.54, -0.5, 0], [-0.54, -0.5, 0], [0, -1.0, 0.55], [0, -1.0, -0.5], [0, -0.5, 0.6], [0, -0.5, -0.6], [0, -1.04, 0]]);
       P(this.hipJ[i], [[0.62, -0.6, 0], [-0.62, -0.6, 0], [0, -0.6, 0.64], [0, -0.6, -0.64]]);
-      P(this.kneeJ[i], [[0, 0, 0.5], [0, 0, -0.5], [0.46, 0, 0], [-0.46, 0, 0], [0, -0.8, -0.58], [0, -0.9, 0.52]]);
+      P(this.kneeJ[i], [[0, 0, 0.62], [0, 0, -0.5], [0.5, 0, 0], [-0.5, 0, 0], [0, -0.8, -0.58], [0, -0.9, 0.52]]);
       // boot: heel, toe tip and the four sole corners (only used when the legs are not IK-planted)
-      P(this.footJ[i], [[0, -SOLE, -HEEL_Z], [0, -SOLE, TOE_Z], [0.5, -SOLE, 0.95], [-0.5, -SOLE, 0.95], [0.5, -SOLE, -0.3], [-0.5, -SOLE, -0.3]], true);
+      P(this.footJ[i], [[0, -SOLE, -HEEL_Z], [0, -SOLE, TOE_Z], [0.45, -SOLE, 0.8], [-0.45, -SOLE, 0.8], [0.45, -SOLE, -0.3], [-0.45, -SOLE, -0.3]], true);
     }
   }
 
@@ -231,11 +271,17 @@ export class Robot {
    * Floor contact: if any part of the body is below the floor, lift the whole body by exactly that much.
    * (Planted feet are handled by the IK; this catches falls, knock-downs, air poses and animation overshoot.)
    */
-  private groundSolve(S: number, ik: number) {
+  private groundSolve(S: number, ik: number, floorPose = false) {
     this.root.updateMatrixWorld(true);
     let minY = Infinity;
     for (const pr of this.probes) {
-      if (pr.foot && ik > 0.85) continue;
+      // THE BOOTS NEVER PROP HIM UP. Once the IK owns the feet the ankles are placed on the canvas by the solve
+      // itself, so a boot probe can only do harm: on the floor a single boot poking through the canvas used to
+      // lift the WHOLE body until that boot cleared — the robot floated a full metre above the mat, lying flat,
+      // standing on one heel. The body has to rest on its back, hip or shoulder there. (And while he is standing
+      // the boot probes only ever asked for the 6 mm of mesh/probe slack the art has, tipping the soles off the
+      // canvas — the IK already plants them flush.)
+      if (pr.foot && (floorPose || ik > 0.85)) continue;
       this.tv.copy(pr.p).applyMatrix4(pr.parent.matrixWorld);
       if (this.tv.y < minY) minY = this.tv.y;
     }
@@ -248,8 +294,18 @@ export class Robot {
       m.color.setHex(color);
       m.emissive.setHex(color);
     }
+    this.eyeBase.setHex(color);
     for (const f of this.eyeFlares) {
       if (f.material instanceof THREE.MeshBasicMaterial) f.material.color.setHex(color);
+    }
+    for (const m of this.eyeIris) {
+      if (m.material instanceof THREE.MeshBasicMaterial) m.material.color.setHex(color);
+    }
+    for (const m of this.eyePulses) {
+      if (m.material instanceof THREE.MeshBasicMaterial) m.material.color.setHex(color);
+    }
+    for (const m of this.eyeBeams) {
+      if (m.material instanceof THREE.MeshBasicMaterial) m.material.color.setHex(color);
     }
     for (const l of this.eyeLights) {
       l.color.setHex(color);
@@ -278,6 +334,11 @@ export class Robot {
     this.dashOn = false;
     this.firstStep = false;
     this.postDashT = 0;
+    this.moveT = 0;
+    this.movePeak = 0;
+    this.tapT = 0;
+    this.punchSeq = -1;
+    this.prevSpd = 0;
   }
 
   // ------------------------------------------------------------------ footwork
@@ -307,11 +368,14 @@ export class Robot {
     this.runK += (runU * runU * (3 - 2 * runU) - this.runK) * (1 - Math.exp(-10 * dt));
     const run = this.runK;
 
-    // boxing stance (used when standing still / skidding)
-    const wide = 1.18 + a.dip * 0.3;
+    // boxing stance (used when standing still / skidding). dip and lunge are filtered first: a punch or a landing
+    // spikes both of them, and letting that through would jerk the stance the planted feet are measured against.
+    this.dipK += (a.dip - this.dipK) * (1 - Math.exp(-14 * dt));
+    this.lungeK += (a.lunge - this.lungeK) * (1 - Math.exp(-12 * dt));
+    const wide = 1.18 + this.dipK * 0.3;
     const ideal = [
-      { x: wide, z: 0.62 + a.lunge * 0.28 },
-      { x: -wide, z: -0.72 + a.lunge * 0.12 },
+      { x: wide, z: 0.62 + this.lungeK * 0.28 },
+      { x: -wide, z: -0.72 + this.lungeK * 0.12 },
     ];
     const restP = [0.05, 0.2];
     const restYaw = [0.1, -0.5];
@@ -335,6 +399,9 @@ export class Robot {
         f.stT = 0;
         f.follow = 0;
         f.p0 = restP[i];
+        f.punchStep = false;
+        f.shuffle = false;
+        f.gaitStep = false;
       }
       this.gait = false;
       if (this.ikW > 0.85) this.needSnap = false;
@@ -360,10 +427,30 @@ export class Robot {
     if (this.dashOn) this.dashT += dt;
     this.postDashT = Math.max(0, this.postDashT - dt);
 
+    // ---- movement-burst tracking: a very short tap of A/D must not read as a full stride ----
+    if (spdRaw > 0.9) {
+      this.moveT += dt;
+      this.movePeak = Math.max(this.movePeak, spdRaw);
+    } else {
+      // the key was only flicked: remember it so the next steps stay small and calm
+      if (this.moveT > 0.02 && this.moveT < 0.17 && this.movePeak > 0.8) this.tapT = 0.45;
+      this.moveT = 0;
+      this.movePeak = 0;
+    }
+    this.tapT = Math.max(0, this.tapT - dt);
+
     // ---- gait mode hysteresis ----
     const wasGait = this.gait;
+    // A key that was only flicked must not fire a full first stride: the walk cycle starts only once the body has
+    // really been moving (moveT) AND is still being driven (not already braking → the key is gone). The tap then
+    // glides over the stance with a small shuffle instead of a long, exaggerated step.
+    // (the raw frame-to-frame speed drop reacts at once; the smoothed af/al lags by a few frames)
+    const dv = dt > 0 ? (spdRaw - this.prevSpd) / dt : 0;
+    this.prevSpd = spdRaw;
+    const accAlong = (a.vf * a.af + a.vl * a.al) / Math.max(0.5, spdRaw);
+    const braking = dv < -4 || accAlong < -1.5;
     if (this.dashOn) this.gait = false;
-    else if (!this.gait && spdRaw > 0.9 && spdRaw < 90) this.gait = true;
+    else if (!this.gait && !braking && spdRaw > 0.9 && spdRaw < 90 && this.moveT > 0.12) this.gait = true;
     else if (this.gait && (spdRaw < 0.5 || spdRaw > 100)) this.gait = false;
     this.gaitW += ((this.gait ? 1 : 0) - this.gaitW) * (1 - Math.exp(-7 * dt));
 
@@ -397,19 +484,11 @@ export class Robot {
       const f = this.feet[i];
       if (f.stepping) continue;
       const l = toL(f.x, f.z);
-      let ex = l.x - ideal[i].x;
-      let ez = l.z - ideal[i].z;
-      let err = Math.hypot(ex, ez);
-      if (err > 2.3 && !this.gait && !this.dashOn) {
-        const k = 2.3 / err;
-        ex *= k;
-        ez *= k;
-        const w = toW(ideal[i].x + ex, ideal[i].z + ez);
-        f.x = w.x;
-        f.z = w.z;
-        err = 2.3;
-      }
-      f.err = err;
+      const ex = l.x - ideal[i].x;
+      const ez = l.z - ideal[i].z;
+      // A foot that stays planted is NEVER dragged sideways to fake a correction — that is what made the feet
+      // skate. A real imbalance is answered the way a fighter answers it: with a quick recovery step (below).
+      f.err = Math.hypot(ex, ez);
     }
 
     // ---- start a new step ----
@@ -425,6 +504,7 @@ export class Robot {
         f.gaitStep = false;
         f.shuffle = true;
         f.u = 0;
+        f.p0 = f.pitch; // swings blend out of the pitch the foot really has — no pop at step-off
         f.dur = i === this.dashLead ? 0.14 : 0.16;
         f.lift = 0.11;
       }
@@ -461,28 +541,70 @@ export class Robot {
       }
     } else {
       this.stepDist = 0;
-      let pick = -1;
-      let best = 0;
-      for (let i = 0; i < 2; i++) {
-        const f = this.feet[i];
-        const o = this.feet[1 - i];
-        if (f.stepping || f.err < (this.postDashT > 0 ? 0.5 : 0.9)) continue;
-        if (o.stepping && f.err < 1.7) continue;
-        const score = f.err + (i === 0 ? 0.05 : 0);
-        if (score > best) {
-          best = score;
-          pick = i;
+      // ---- PUNCH FOOTWORK: the foot on the punching side re-plants for every strike ----
+      // A strike throws the body forward (see beginStrike), and the leg answers it. Which leg comes from the hand:
+      // the lead (left) foot drives the left-hand strike, the rear (right) foot swings in behind the right hand.
+      // How far comes from the distance — a short, flat nudge at the clinch, a real step-in from out of range.
+      const pf = this.dashOn ? -1 : Math.round(a.punchFoot ?? -1);
+      const pSeq = a.punchSeq ?? -1;
+      let planted = false;
+      if (pf >= 0 && pf <= 1 && pSeq !== this.punchSeq) {
+        this.punchSeq = pSeq;
+        const f = this.feet[pf];
+        if (!f.stepping) {
+          const z = clamp(a.punchZ ?? 0.2, -0.25, 0.95);
+          const x = clamp(a.punchX ?? 0, -0.5, 0.5);
+          f.punchStep = true;
+          f.gaitStep = false;
+          f.shuffle = false;
+          f.stepping = true;
+          f.u = 0;
+          f.p0 = f.pitch;
+          f.fx = f.x;
+          f.fz = f.z;
+          f.tx = ideal[pf].x + x;
+          f.tz = ideal[pf].z + z;
+          // a re-plant is short and low: the step of a fighter, not of a marcher
+          f.dur = clamp(a.punchDur ?? 0.19, 0.1, 0.32) * (1 + this.tapT * 0.35);
+          f.lift = a.stepLift ?? 0.06 + Math.min(0.09, Math.abs(z) * 0.07);
+          f.err = 0;
+          this.punchYaw = clamp((a.punchX ?? 0) * 1.1, -0.28, 0.28);
+          planted = true;
         }
       }
-      if (pick >= 0) {
-        const f = this.feet[pick];
-        f.stepping = true;
-        f.gaitStep = false;
-        f.u = 0;
-        f.fx = f.x;
-        f.fz = f.z;
-        f.dur = clamp(0.25 - spd * 0.024, 0.1, 0.23) * (f.err > 1.5 ? 0.8 : 1);
-        f.lift = 0.09 + sp01 * 0.13;
+      if (!planted) {
+        let pick = -1;
+        let best = 0;
+        // while a flicked key is still cooling down, only a real imbalance may trigger a step.
+        // ON THE FLOOR the balance steps are OFF altogether: the feet stay exactly where the knock-down left them
+        // (a fighter does not shuffle his boots around while he is on his back) — the get-up re-plants them itself.
+        const thr = a.rise !== undefined ? 1e9 : (this.postDashT > 0 ? 0.5 : 0.9) + this.tapT * 0.5;
+        const messy = Math.max(this.feet[0].err, this.feet[1].err) > 1.9; // badly off balance → step now, quietly
+        for (let i = 0; i < 2; i++) {
+          const f = this.feet[i];
+          const o = this.feet[1 - i];
+          if (f.stepping || f.err < thr) continue;
+          if (o.stepping && f.err < 1.7) continue;
+          const score = f.err + (i === 0 ? 0.05 : 0);
+          if (score > best) {
+            best = score;
+            pick = i;
+          }
+        }
+        if (pick >= 0) {
+          const f = this.feet[pick];
+          f.punchStep = false;
+          f.stepping = true;
+          f.gaitStep = false;
+          f.u = 0;
+          f.p0 = f.pitch;
+          f.fx = f.x;
+          f.fz = f.z;
+          // a recovery step is quick and low so it reads as a shuffle, not as a lunge
+          const rec = messy ? 0.78 : 1;
+          f.dur = clamp(0.25 - spd * 0.024, 0.1, 0.23) * (f.err > 1.5 ? 0.8 : 1) * (1 + this.tapT * 0.45) * rec;
+          f.lift = (0.09 + sp01 * 0.13) * (1 - this.tapT * 0.5) * (messy ? 0.8 : 1);
+        }
       }
     }
 
@@ -509,12 +631,15 @@ export class Robot {
           if (us < 0.14) pit = lerp(landP, 0, sm(us / 0.14));
           else if (us < 0.46) pit = 0;
           else pit = toeP * sm((us - 0.46) / 0.54);
-          f.pitch = lerp(f.pitch, pit, 1 - Math.exp(-(26 + run * 12) * dt));
+          // the first third of the stance rolls out of the pitch the foot ACTUALLY touched down with: a foot that
+          // lands up on its ball (straight after a punch) rolls flat instead of snapping into a heel-strike pose
+          pit = lerp(f.p0, pit, sm(clamp(us / 0.3, 0, 1)));
+          f.pitch = lerp(f.pitch, pit, 1 - Math.exp(-(20 + run * 14) * dt)); // a walk rolls off the toe gently
           f.yawOff = lerp(f.yawOff, psi + toeOut[i], 1 - Math.exp(-14 * dt));
         } else {
           const extra = (i === 0 ? 0.1 : 0.17) * h * bounceAmt;
           f.pitch = lerp(f.pitch, restP[i] + extra, 1 - Math.exp(-20 * dt));
-          f.yawOff = lerp(f.yawOff, restYaw[i] * (1 - 0.75 * sp01), 1 - Math.exp(-10 * dt));
+          f.yawOff = lerp(f.yawOff, restYaw[i] * (1 - 0.75 * sp01), 1 - Math.exp(-7.5 * dt));
         }
         f.curX = f.x;
         f.curZ = f.z;
@@ -544,9 +669,20 @@ export class Robot {
           x: dirx * half + pr.x * s * wW + a.vl * K * rem * 0.95,
           z: dirz * half + pr.z * s * wW + a.vf * K * rem * 0.95,
         };
+        if (!this.gait) {
+          // the gait ended mid-swing (the key was flicked): come down into the boxing stance instead of
+          // finishing a full stride — this is what made a short tap look exaggerated
+          const k = 0.78;
+          tl.x = lerp(tl.x, ideal[i].x, k);
+          tl.z = lerp(tl.z, ideal[i].z, k);
+        }
+      } else if (f.punchStep) {
+        // strike re-plant: a short, flat, deliberate step onto the target the punch was thrown from
+        tl = { x: f.tx, z: f.tz };
       } else {
         const moving = spdRaw > 0.45;
-        const over = moving ? clamp(0.28 + spd * 0.06, 0.28, 0.66) : 0;
+        // the slower the body travels, the smaller the shuffle: a light tap of A/D gets a nudge, not a lunge
+        const over = moving ? clamp(0.16 + spd * 0.075, 0.16, 0.66) * (1 - this.tapT * 0.4) : 0;
         let ox = dirx * over + a.vl * rem * 0.8;
         let oz = dirz * over + a.vf * rem * 0.8;
         const om = Math.hypot(ox, oz);
@@ -556,6 +692,15 @@ export class Robot {
         }
         tl = { x: ideal[i].x + ox, z: ideal[i].z + oz };
       }
+      // keep daylight between the feet: a landing foot is pushed back to its own side of the stance, so the two
+      // never cross or land on top of each other (that is what made the fast shuffles look sloppy)
+      const other = this.feet[1 - i];
+      if (!other.stepping) {
+        const ol = toL(other.x, other.z);
+        const sep = tl.x - ol.x;
+        const minSep = 0.62;
+        if (Math.abs(sep) < minSep) tl.x = ol.x + (i === 0 ? minSep : -minSep);
+      }
       const tw = toW(tl.x, tl.z);
       // gait swings start and end with ~zero ground speed (no skidding on touch-down, no jerk at toe-off)
       const e = f.shuffle ? 1 - Math.pow(1 - u, 2.2) : f.gaitStep ? lerp(u, sm(u), 0.95) : lerp(sm(u), 1 - Math.pow(1 - u, 2), 0.55);
@@ -564,7 +709,7 @@ export class Robot {
       const w = Math.sin(Math.PI * u);
       if (f.shuffle) {
         // skimming the floor on the balls of the feet
-        f.pitch = restP[i] + 0.2 * w + (i === this.dashLead ? 0 : 0.12 * (1 - u));
+        f.pitch = lerp(f.p0, restP[i] + 0.2 + (i === this.dashLead ? 0 : 0.12 * (1 - u)), w);
         f.yawOff = lerp(f.yawOff, restYaw[i], 1 - Math.exp(-16 * dt));
         sway += -s * 0.05 * w;
       } else if (f.gaitStep) {
@@ -576,8 +721,15 @@ export class Robot {
         sway += -s * 0.13 * w * (1 + run * 0.5); // weight shifts over the stance foot
         roll += -s * 0.05 * w * (1 + run * 0.7); // the pelvis dips on the swinging side
         swingW = Math.max(swingW, w);
+      } else if (f.punchStep) {
+        // the foot slides forward for the punch, staying low (a fighter's re-plant, no knee lift). It also PIVOTS:
+        // the rear foot rolls onto its ball and turns out with the shot, the lead foot turns in behind it.
+        const heel = i === 1 ? 0.07 : 0.01;
+        f.pitch = lerp(f.p0, restP[i] + 0.14 + heel, w);
+        f.yawOff = lerp(f.yawOff, restYaw[i] + (i === 1 ? -0.13 : 0.06) * w - this.punchYaw * w, 1 - Math.exp(-20 * dt));
+        sway += -s * 0.055 * w;
       } else {
-        f.pitch = restP[i] + 0.27 * w;
+        f.pitch = lerp(f.p0, restP[i] + 0.27, w);
         f.yawOff = lerp(f.yawOff, restYaw[i] * (1 - 0.75 * sp01), 1 - Math.exp(-14 * dt));
         sway += -s * 0.1 * w;
         roll += s * 0.05 * w;
@@ -589,15 +741,26 @@ export class Robot {
         f.stepping = false;
         f.stT = 0;
         f.follow = 0;
+        // touch-down NEVER snaps the ankle: it steps towards the landing pose by at most ~4 deg a frame, so the
+        // roll from the swing into the stance is continuous whatever pitch the foot happened to be carrying
+        const settle = (target: number) => {
+          f.pitch += clamp(target - f.pitch, -0.07, 0.07);
+        };
+        f.p0 = f.pitch; // the pitch this stance has to roll out of
         if (f.shuffle) {
           f.shuffle = false;
-          f.pitch = restP[i] + 0.1;
+          settle(restP[i] + 0.1);
           this.sLand.v -= 0.3;
+        } else if (f.punchStep) {
+          f.punchStep = false;
+          settle(restP[i] + 0.08);
+          f.yawOff += i === 1 ? -0.05 : 0.02; // the pivot leaves a touch of turn behind; it eases out next stance
+          this.sLand.v -= 0.24 + spd * 0.12; // the fist lands on the same beat as the foot
         } else if (f.gaitStep) {
-          f.pitch = landP; // heel strike (walk) / mid-foot strike (run)
+          settle(landP); // heel strike (walk) / mid-foot strike (run)
           this.sLand.v -= 0.16 + spd * 0.08 + run * 0.35; // weight transfer; a sprint lands harder
         } else {
-          f.pitch = restP[i] + 0.12;
+          settle(restP[i] + 0.12);
           this.sLand.v -= 0.3 + spd * 0.2;
         }
         this.onStep?.(i, spd, f.x, f.z);
@@ -643,7 +806,29 @@ export class Robot {
     const S = this.root.scale.x;
     const yaw = this.root.rotation.y;
     const e = clamp(a.fall, 0, 1.06);
-    const ikTarget = (1 - clamp(a.air, 0, 1)) * (1 - sm(Math.min(1, e * 1.8)));
+    // ---- GET-UP STAGING (poses.ts owns the curves) ----
+    // The knock-down is one solid pose; the rise is not. The legs come back under the body first (the hips lead
+    // the push), the torso is the last part of the lie to leave the canvas, and the whole thing rolls onto one
+    // shoulder on the way through — so `e` is no longer used raw, it is split into a leg weight and a torso
+    // weight with the stage curves on top. Both weights are exactly zero at rise = 1, which is what lets the
+    // game drop the get-up and hand the body straight back to the ordinary standing rig without a pop.
+    const riseU = clamp(a.rise ?? 0, 0, 1);
+    const riseDir = (a.riseDir ?? 1) < 0 ? -1 : 1;
+    const rs = riseStages(riseU);
+    const riseOut = clamp(a.riseOut ?? 0, 0, 1);
+    // The legs are the LAST thing the standing rig gets back. While he is on the canvas they are posed by hand
+    // (the knee tuck / the kneel below) and the IK only takes them over as he drives up out of the crouch, which
+    // is what stops the old behaviour: boots snapped onto lying positions while the body climbed over them.
+    const eIk = clamp(e * (1 - rs.legs), 0, 1.06);
+    const eSpan = clamp(e * (1 - rs.unroll) * (1 - rs.hipUp * 0.3), 0, 1.06); // the torso unfolds late, and softly
+    // ...and it does not unwind straight to zero: it passes through a deep forward fold, chest over the knees,
+    // which is the shape a real stand-up has. `fold` peaks around two thirds of the way up and is gone at both ends.
+    const eFold = rs.fold * 0.62 * (0.55 + 0.45 * (1 - eSpan));
+    // ON THE FLOOR THE LEGS GO BACK TO THE IK. The boots are sitting on the canvas, so solving the legs from them
+    // is what gives a real knock-down pose: the knees fold exactly as far as the lie needs, the boots stay ON the
+    // mat, and nothing has to be guessed by hand — the game's get-up footwork then just walks the feet back under
+    // him and the legs follow their own bones. (FK is for the AIRBORNE flail, where nothing touches the floor.)
+    const ikTarget = a.rise !== undefined ? 1 : (1 - clamp(a.air, 0, 1)) * (1 - sm(Math.min(1, eIk * 1.8)));
     this.ikW += (ikTarget - this.ikW) * (1 - Math.exp(-(ikTarget > this.ikW ? 5 : 14) * dt));
     const ik = this.ikW;
     this.airW += (clamp(a.air, 0, 1) - this.airW) * (1 - Math.exp(-11 * dt));
@@ -675,7 +860,25 @@ export class Robot {
     const rollA = this.sRoll.update(-clamp(a.al * 0.009 + a.vl * 0.01, -0.22, 0.22), 2.4, 0.7, dt);
     const sway = this.sSway.update(fw.sway, 7, 0.8, dt);
     const lag = -clamp(a.yawRate * 0.07, -0.4, 0.4); // chest trails the turn
-    const tw = a.twist + a.hitSign * a.hit * 0.85;
+
+    // ---------------- HIT REACTION: built from the real geometry of the punch ----------------
+    // Every link of the chain takes the blow from the same place, but each one takes a bigger share than the one
+    // below it: the pelvis rotates a little, the chest turns more, the head snaps. `hitSnap` (0…1) is how much of
+    // the blow landed on the head — a head shot whips the neck, a body shot folds the chest and lets the head
+    // trail after it (the springs do the whiplash for free).
+    const hMag = a.hit;
+    const hF = clamp(a.hitF ?? -1, -1.4, 1.4);
+    const hL = clamp(a.hitL ?? 0, -1.4, 1.4);
+    const hPt = clamp(a.hitPt ?? 0.5, 0, 1);
+    const hSp = clamp(a.hitSpin ?? hL, -2.4, 2.4);
+    const hUp = a.hitUp;
+    // one signed term per axis: knocked back / lifted / turned (HK keeps a full-power blow to a readable snap —
+    // the chain below adds up, so a single link must stay small)
+    const HK = 0.17;
+    const hPitch = (hF * 0.6 - hUp * 0.42) * hMag * HK;
+    const hRoll = -hL * 0.52 * hMag * HK;
+    const hYaw = hSp * 0.4 * hMag * HK;
+    const tw = a.twist + hYaw * 1.05;
 
     const pY = this.sPelvisYaw.update(tw * 0.4, 12, 0.8, dt);
     // stride-driven pelvis motion goes through its own slow springs → rolling, continuous motion (no twitching)
@@ -689,7 +892,7 @@ export class Robot {
     // ---------------- body & spine ----------------
     const gw = this.gaitW;
     const bodyX = sway;
-    const bodyZ = a.lunge * 0.55 - a.hit * 0.8;
+    const bodyZ = a.lunge * 0.55 + hF * hMag * 0.5; // the hips ride back with the blow (or fold in on a body shot)
     // desired hip height: relaxed knees standing; walking is a touch taller and rises on single support
     // walking: the hips sink a little at double support (touch-down) and rise smoothly over the stance leg.
     // The height follows the stride phase directly, so it is a clean sine-like bob, not a reach-limited kink.
@@ -713,45 +916,94 @@ export class Robot {
     }
     // soft limit: the reach cap can no longer introduce a kink in the vertical motion
     const hipH = this.sHip.update(softMin(hd, cap, 0.12), rw > 0.3 ? 17 : this.dashOn || gw > 0.5 ? 10 : 15, 0.9, dt);
-    const yIK = hipH - HIP_Y - UP + a.hitUp * 0.4;
-    const tipE = clamp(e + a.tilt / 1.5, 0, 1.06);
-    const yFall = lerp(0.1, 0.78, sm(Math.min(1, tipE)));
-    this.body.position.set(bodyX, lerp(yFall, yIK + fw.bob + land, ik), bodyZ);
-    this.body.rotation.set(a.lean * 0.3 + leanA * 0.4 - a.hit * 0.4 - a.hitUp * 0.45 - e * 1.5 - a.tilt, 0, a.roll + rollA * 0.5);
+    const yIK = hipH - HIP_Y - UP + a.hitUp * 0.42 - Math.max(0, -hF) * hMag * 0.16;
+    const tipE = clamp(eSpan + a.tilt / 1.5, 0, 1.06);
+    // Height of the body pivot while he is on the canvas. It is deliberately LOW: the floor solver (groundSolve)
+    // then lifts the body by exactly the amount its lowest surface needs, so he really rests ON the canvas instead
+    // of hanging above it. (It used to ask for 0.78, which left the whole torso floating ~0.7 above the floor,
+    // propped up on one boot — that was a large part of why the knock-down and the get-up looked wrong.)
+    const yFall = lerp(0.04, 0.2, sm(Math.min(1, tipE)));
+    // ---- the staged rise, layered on top of the lie ----
+    // `side` peaks about a third of the way in: he rolls off his back onto one shoulder, the hips slide across over
+    // the planted hand, the body drifts forward over the knees, and the last beat dips so the rise LANDS.
+    const riseX = riseDir * 0.32 * rs.side;
+    // every staged term below is scaled to vanish at BOTH ends of the rise (a term that survived to rise = 1 would
+    // pop out of the pose the instant the game hands the body back to the ordinary rig)
+    const riseZ = rs.tuck * 0.1 + (rs.fold + rs.kneel) * 0.09 - rs.tall * 0.05 * (1 - riseU);
+    const riseY = -rs.bounce * 0.18 - riseOut * 0.05;
+    // turning a lying body about its own spine reads exactly as the log-roll onto the side; as the pitch unwinds
+    // the very same channel becomes the twist that squares him back up to the enemy
+    const riseYaw = riseDir * 1.0 * rs.side + Math.sin(t * 7) * 0.03 * riseOut;
+    const riseRoll = riseDir * 0.24 * rs.side;
+    // the pivot height while he is on the floor: the hips climb on their own stage curve (they lead the whole
+    // move), and only once he is upright does the standing rig's height take over (heightW → ik).
+    const heightW = a.rise !== undefined ? rs.hipUp : ik;
+    this.body.position.set(bodyX + riseX, lerp(yFall, yIK + fw.bob + land, heightW) + riseY, bodyZ + riseZ);
+    this.body.rotation.set(
+      a.lean * 0.3 + leanA * 0.4 + hPitch * 0.4 - eSpan * 1.5 + eFold - a.tilt,
+      riseYaw,
+      a.roll + rollA * 0.5 + hRoll * 0.45 + riseRoll,
+    );
     const breathe = Math.sin(t * 2.4) * 0.015;
     // chest/waist cancel the hip turn so the upper body keeps facing the opponent
     // pelvis and chest counter-rotate (net chest yaw = -0.5 × pelvis yaw) and the chest stays level over the pelvis dip
     this.pelvis.rotation.set(a.lean * 0.06, pelvisYaw, gr);
-    this.waist.rotation.set(a.lean * 0.3 + leanA * 0.3, wY - psi * 0.5 - gy * 0.7, a.hitSign * a.hit * 0.08 - gr * 0.6);
-    this.chest.rotation.set(a.lean * 0.38 + leanA * 0.25 + breathe + 0.04, cY - psi * 0.4 - gy * 0.8, a.hitSign * a.hit * 0.2 - rollA * 0.3 - gr * 0.4);
+    this.waist.rotation.set(a.lean * 0.3 + leanA * 0.3 + hPitch * 0.28, wY - psi * 0.5 - gy * 0.7 + hYaw * 0.3, -gr * 0.6 + hRoll * 0.3);
+    this.chest.rotation.set(
+      a.lean * 0.38 + leanA * 0.25 + breathe + 0.04 + hPitch * (0.3 + (1 - hPt) * 0.3),
+      cY - psi * 0.4 - gy * 0.8 + hYaw * 0.55,
+      -rollA * 0.3 - gr * 0.4 + hRoll * 0.3,
+    );
 
     // head: lags the chest and counter-rotates to keep eyes on the opponent
-    const hx = this.sHeadX.update(-0.06 - a.hit * 0.6 - a.hitUp * 0.7 - a.lean * 0.5 + e * 0.3 - leanA * 0.3, 5, 0.45, dt);
-    const hy = this.sHeadY.update(-a.twist * 0.72 - a.hitSign * a.hit * 1.1 - lag * 0.5, 5.5, 0.5, dt);
-    const hz = this.sHeadZ.update(a.hitSign * a.hit * 0.15 - rollA * 0.4, 5, 0.5, dt);
+    const hSnap = 0.25 + hPt * 1.15; // a head shot whips the neck, a body shot barely turns it
+    // ...and during the get-up the head leads the whole move: chin tucked while he is flat, lifted early so he is
+    // already looking at you before the torso arrives, then a small nod as he settles into the stance.
+    const hRise =
+      rs.head * 0.42 // the head comes up off the chest FIRST (before the hips, before the torso)
+      + eSpan * 0.3 - rs.hipUp * 0.34 * (1 - rs.unroll) - eFold * 0.55 + rs.bounce * 0.1
+      - riseOut * 0.06 * Math.sin(t * 11);
+    const hx = this.sHeadX.update(-0.06 - a.lean * 0.5 + hRise - leanA * 0.3 + hPitch * hSnap - hUp * 0.3 * hMag, 5.4, 0.45, dt);
+    const hy = this.sHeadY.update(-a.twist * 0.72 - lag * 0.5 + hYaw * (0.6 + hPt * 0.9), 5.6, 0.5, dt);
+    const hz = this.sHeadZ.update(-rollA * 0.4 + hRoll * (0.4 + hPt * 0.8), 5.2, 0.5, dt);
     this.neck.rotation.set(hx * 0.45, hy * 0.5, hz * 0.5);
     this.head.rotation.set(hx * 0.55, hy * 0.5, hz * 0.5);
 
     // ---------------- ocular motion & eye effects ----------------
-    if (this.eyePupils.length > 0) {
+    if (this.eyePupils.length > 0 || this.eyePulses.length > 0) { // the brute head has the optics but no pupils
+      // 0. STRIKE OPTICS. `strike` ramps 0 → 1 as the fist leaves the guard; the crossing fires a one-shot:
+      //    the pupils snap narrow, the iris blows out white, a lock-on ring pops off the socket and a light
+      //    streak stretches forward with the throw. Then everything settles back into the idle shimmer.
+      const ch = clamp(a.strike ?? 0, 0, 1);
+      const sp = clamp(a.strikePow ?? 0.5, 0, 1);
+      if (ch >= 1 && this.strikeCharge < 1) this.eyeFire = 1;
+      this.strikeCharge = ch;
+      this.eyeFire = Math.max(0, this.eyeFire - dt / (0.22 + sp * 0.18));
+      const fire = this.eyeFire * this.eyeFire * (3 - 2 * this.eyeFire); // smooth 1 → 0 envelope
+      const heat = clamp(fire * (0.55 + sp * 0.8), 0, 1);
+      const charge = ch * (1 - fire); // charging (wind-up) weight
+
       // 1. Target gaze tracking: if lookX/lookY provided, track towards target; otherwise autonomous cybernetic saccades
       const scanPhase = t * 1.5;
       const saccadeT = t * 2.4;
       const dartX = (Math.sin(saccadeT * 1.7) > 0.65 ? 0.016 : -0.012) * (Math.sin(saccadeT * 0.7) > 0.15 ? 1 : 0);
       const wanderX = Math.sin(scanPhase * 0.7) * 0.012 + Math.sin(scanPhase * 1.9) * 0.007;
       const wanderY = Math.cos(scanPhase * 0.5) * 0.006;
+      // while a punch is being thrown the darting stops: the machine locks on
+      const lock = 1 - clamp(charge + fire, 0, 1);
 
-      const targetLookX = (a.lookX ?? 0) * 0.03 + wanderX + dartX;
-      const targetLookY = (a.lookY ?? 0) * 0.018 + wanderY;
+      const targetLookX = (a.lookX ?? 0) * 0.03 + (wanderX + dartX) * lock;
+      const targetLookY = (a.lookY ?? 0) * 0.018 + wanderY * lock;
 
       // Spring-damped eye look position
       this.eyeLookX += (targetLookX - this.eyeLookX) * Math.min(1, 16 * dt);
       this.eyeLookY += (targetLookY - this.eyeLookY) * Math.min(1, 16 * dt);
 
-      // 2. Scanline sweep: smooth up-and-down laser scan across ocular aperture
-      const scanY = Math.sin(t * 4.5) * 0.035;
+      // 2. Scanline sweep: a slow ranging sweep at rest; at the release it snaps into a fast lock sweep
+      const scanY = Math.sin(t * 4.5) * 0.035 * (1 - fire) + Math.sin(t * 52) * 0.026 * fire;
 
       // 3. Neural pulse & micro-blink: breathing pulse + occasional rapid double-blink digital recalibration
+      //    (no blinking while a punch is in the air — the optics stay wide open and hot)
       const blinkCycle = (t * 0.22) % 1; // every ~4.5 seconds
       let blink = 1.0;
       if (blinkCycle < 0.035) {
@@ -761,33 +1013,74 @@ export class Robot {
         // Rapid double-blink pulse
         blink = Math.max(0.12, Math.sin(((blinkCycle - 0.055) / 0.03) * Math.PI));
       }
+      blink = lerp(blink, 1, clamp(charge + fire, 0, 1));
 
-      const flareScaleX = (1.0 + Math.sin(t * 5.5) * 0.22 + Math.abs(this.eyeLookX) * 10) * blink;
-      const flareOpacity = clamp(0.45 + Math.sin(t * 4.8) * 0.25 + a.glow * 0.25, 0.2, 1.0) * blink;
+      const flareScaleX = (1.0 + Math.sin(t * 5.5) * 0.22 + Math.abs(this.eyeLookX) * 10) * blink * (1 + fire * (1.3 + sp * 2.8));
+      const flareOpacity = clamp(0.45 + Math.sin(t * 4.8) * 0.25 + a.glow * 0.25 + heat * 0.5, 0.2, 1) * blink;
 
       for (let i = 0; i < this.eyePupils.length; i++) {
         const pupil = this.eyePupils[i];
-        pupil.position.x = this.eyeLookX;
-        pupil.position.y = this.eyeLookY;
-        pupil.scale.set(1.0, blink, 1.0);
+        // a hard mechanical jitter right at the release, then dead still
+        pupil.position.x = this.eyeLookX + Math.sin(t * 130) * 0.006 * fire;
+        pupil.position.y = this.eyeLookY + Math.cos(t * 150) * 0.005 * fire;
+        pupil.scale.set(1.0 - charge * 0.05 - fire * 0.12, blink * (1.0 - charge * 0.2 - fire * 0.42), 1.0);
       }
 
       for (let i = 0; i < this.eyeScanners.length; i++) {
         const scanner = this.eyeScanners[i];
         scanner.position.y = scanY;
-        scanner.scale.set(0.9 + Math.sin(t * 8) * 0.1, 1.0, 1.0);
+        scanner.scale.set((0.9 + Math.sin(t * 8) * 0.1) * (1 + fire * 1.8), 1.0, 1.0);
+        if (scanner.material instanceof THREE.MeshBasicMaterial) {
+          scanner.material.opacity = clamp(0.32 + Math.sin(t * 5) * 0.22 + heat * 0.65, 0, 1);
+        }
       }
 
       for (let i = 0; i < this.eyeFlares.length; i++) {
         const flare = this.eyeFlares[i];
-        flare.scale.set(flareScaleX, blink, 1.0);
+        flare.scale.set(flareScaleX, blink * (1 + fire * 0.5), 1.0);
         if (flare.material instanceof THREE.MeshBasicMaterial) {
           flare.material.opacity = flareOpacity;
+          flare.material.color.copy(this.eyeBase).lerp(this.eyeWhite, Math.min(1, heat * 0.85));
+        }
+      }
+
+      // iris plate: dims while the punch charges, then flashes white on the release
+      for (let i = 0; i < this.eyeIris.length; i++) {
+        const iris = this.eyeIris[i];
+        if (iris.material instanceof THREE.MeshBasicMaterial) {
+          iris.material.color.copy(this.eyeBase).multiplyScalar(1 - charge * 0.4).lerp(this.eyeWhite, heat);
+        }
+      }
+
+      // lock-on ring: pops out of the socket and fades on every punch
+      for (let i = 0; i < this.eyePulses.length; i++) {
+        const pulse = this.eyePulses[i];
+        const u = 1 - this.eyeFire;
+        pulse.scale.setScalar(0.5 + u * (1.6 + sp * 1.4));
+        if (pulse.material instanceof THREE.MeshBasicMaterial) {
+          pulse.material.opacity = fire * (0.3 + sp * 0.45);
+          pulse.material.color.copy(this.eyeBase).lerp(this.eyeWhite, Math.min(1, heat * 1.1));
+        }
+      }
+
+      // motion streak: a thin light ribbon off the socket that stretches forward with the throw
+      for (let i = 0; i < this.eyeBeams.length; i++) {
+        const beam = this.eyeBeams[i];
+        if (beam.userData.z0 === undefined) beam.userData.z0 = beam.position.z;
+        const len = 0.3 + fire * (0.7 + sp * 1.3);
+        beam.scale.set(1, 1, len / 0.5);
+        beam.position.z = (beam.userData.z0 as number) + len * 0.5;
+        if (beam.material instanceof THREE.MeshBasicMaterial) {
+          beam.material.opacity = fire * (0.22 + sp * 0.3);
+          beam.material.color.copy(this.eyeBase).lerp(this.eyeWhite, Math.min(1, heat * 0.9));
         }
       }
 
       for (let i = 0; i < this.eyeLights.length; i++) {
-        this.eyeLights[i].intensity = (1.2 + Math.sin(t * 3.8) * 0.4 + a.glow * 0.4) * blink;
+        const light = this.eyeLights[i];
+        light.intensity = (1.2 + Math.sin(t * 3.8) * 0.4 + a.glow * 0.4) * blink * (1 + heat * 2.6);
+        if (heat > 0.01) light.color.copy(this.eyeBase).lerp(this.eyeWhite, Math.min(1, heat * 0.85));
+        else light.color.copy(this.eyeBase);
       }
     }
 
@@ -805,7 +1098,9 @@ export class Robot {
       const guardK = clamp((p.sx + 1.2) / 0.5, 0, 1);
       // walking: a light counter-swing; sprinting: big pumping arms (the run pose keeps the elbows bent at ~100°)
       const swing = lerp(0.11, 0.95, rw) * s * armW * guardK;
-      this.shoulders[i].rotation.set(p.sx + swayA + lagX + swing, p.sy * s, p.sz * s);
+      // the guard is knocked about by the blow: the arm on the side the fist lands on swings out, the other braces
+      const flail = hMag * 0.24 * (0.35 + 0.65 * clamp(s * hL, 0, 1)) * (0.4 + hPt * 0.6);
+      this.shoulders[i].rotation.set(p.sx + swayA + lagX + swing - flail * 0.5, p.sy * s, (p.sz + flail) * s);
       const ex = Math.min(0.02, p.ex);
       this.elbows[i].rotation.x = ex;
       // wrist whips with forearm angular speed (follow-through)
@@ -842,18 +1137,32 @@ export class Robot {
       const flail = Math.sin(t * 9 + i * Math.PI) * 0.22;
       const airHx = (i === 0 ? -0.65 : 0.25) + flail;
       const airKx = (i === 0 ? 0.95 : 0.45) + flail * 0.5;
-      const fallHx = -0.12 * s;
-      const fallKx = 0.15;
+      // LYING LIMP: the pelvis is pitched back almost 90°, so the legs have to be near-zero in this frame to
+      // actually lie ON the mat. A bent knee here hangs the boot under the canvas, and the floor solver is then
+      // left choosing between a boot through the mat and a body floating a metre above it.
+      const fallHx = 0.02 * s;
+      const fallKx = 0.1;
       const am = this.airW;
-      const fkHx = lerp(fallHx, airHx, am);
-      const fkKx = lerp(fallKx, airKx, am);
-      const fkHz = lerp(s * 0.12, s * 0.2, am);
+      // GET-UP: the legs are the load-bearing part of the whole move, and they are posed here by hand (the IK
+      // does not get them back until he drives up out of the crouch). The LEAD leg — the one on the side he rolls
+      // towards — folds hard, knee up over the boot, and stays under him; the TRAIL leg draws in behind it, its
+      // shin lying on the canvas with him up on that knee. The `kneel` beat then rolls the weight onto the lead
+      // foot: the trail hip extends, the lead hip drives over it — the push a real stand-up is built on.
+      const tuckW = rs.tuck * (1 - ik);
+      const kneelW = rs.kneel * (1 - ik);
+      const lead = riseDir > 0 ? 0 : 1;
+      const leadW = i === lead ? 1 : 0;
+      const trailW = 1 - leadW;
+      const fkHx = lerp(fallHx, airHx, am) - 1.25 * leadW * tuckW - 0.3 * leadW * kneelW + 0.4 * trailW * kneelW;
+      const fkKx = lerp(fallKx, airKx, am) + 2.0 * leadW * tuckW + 1.6 * trailW * tuckW;
+      const fkHz = lerp(s * 0.12, s * 0.2, am) + s * 0.34 * tuckW;
 
       const hxF = lerp(fkHx, ikHx, ik);
       const kxF = lerp(fkKx, kx, ik);
       this.hipJ[i].rotation.set(hxF, 0, lerp(fkHz, g, ik));
       this.kneeJ[i].rotation.x = kxF;
-      this.faulds[i].rotation.x = hxF * 0.55;
+      const fd = this.faulds[i];
+      if (fd) fd.rotation.x = hxF * 0.55; // hip skirts are gone; keep working if one is ever added back
       this.kneeCaps[i].rotation.x = -kxF * 0.4;
 
       // keep the foot flat to the ground (with heel/toe roll while stepping)
@@ -868,7 +1177,11 @@ export class Robot {
         this.qf.slerp(this.qd, f.follow);
       }
       if (ik < 1) {
-        this.qd.setFromEuler(this.eu.set(0.25, 0, 0, 'XYZ'));
+        // Off the feet (in the air, knocked down, getting up) the boot stops chasing the floor: it hangs off the
+        // shin the way a relaxed foot does — toes up while he is down, pointed while he is in the air. The old
+        // version blended towards a WORLD orientation, which left the boots pointing straight at the canvas and
+        // the whole robot propped up on a toe.
+        this.qd.setFromEuler(this.eu.set(-0.3 + am * 0.55, 0, 0, 'XYZ'));
         this.qf.slerp(this.qd, 1 - ik);
       }
       this.footJ[i].quaternion.copy(this.qf);
@@ -878,9 +1191,9 @@ export class Robot {
     }
 
     // last step: nothing may ever sink below the floor (falls, knock-downs, overshoot, odd poses)
-    this.groundSolve(S, ik);
+    this.groundSolve(S, ik, a.rise !== undefined);
 
-    const gl = (0.85 + a.glow * 0.7 + Math.sin(t * 3) * 0.12) * (1 - e * 0.85);
+    const gl = (0.85 + a.glow * 0.7 + Math.sin(t * 3) * 0.12) * (1 - eSpan * 0.85);
     for (const m of this.glowMats) m.emissiveIntensity = gl;
     for (const m of this.bodyMats) m.emissiveIntensity = a.flash * 0.5;
   }

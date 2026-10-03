@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { OPPONENTS, PLAYER_NAME, ULTRA_COLOR, smartDef, ultraDef, type Game, type HudState, type OpponentDef } from '../game/Game';
 import type { SfxProfile } from '../game/audio';
 import { Emblem, Key, cssVar } from './Emblem';
-import { DifficultyPicker, FootworkPicker, IqPicker, SfxPicker } from './Pickers';
+import { CamPicker, DifficultyPicker, FootworkPicker, IqPicker, SfxPicker } from './Pickers';
 
 export type MenuTab = 'arena' | 'titan' | 'controls' | 'settings';
 
@@ -17,6 +17,8 @@ export interface MenuProps {
   onUltra: (ultra: boolean) => void;
   fw: number;
   onFw: (m: number) => void;
+  cam: number;
+  onCam: (i: number) => void;
   iq: number;
   onIq: (n: number) => void;
   game?: Game | null;
@@ -60,28 +62,59 @@ const CONTROLS: { title: string; rows: [string[], string][] }[] = [
     ],
   },
   {
+    title: 'PILIH TANGAN',
+    rows: [
+      [['A', '/', 'D'], 'GERAK SEUPIL ke kiri / kanan sudah cukup = ganti tangan menyerang (kiri ◀ / kanan ▶)'],
+      [['◀', '▶'], 'Chip di HUD kiri-atas menunjukkan tangan aktif — jab, hook, uppercut & counter keluar dari tangan itu'],
+    ],
+  },
+  {
     title: 'SERANGAN DASAR',
     rows: [
-      [['J'], 'Jab cepat pembuka serangan'],
-      [['K'], 'Cross lurus bertenaga'],
-      [['U'], 'Hook samping melengkung'],
-      [['I'], 'Uppercut (melempar lawan ke udara)'],
-      [['L'], 'Grab bantingan — menembus blok turtle lawan'],
-      [['LARI', '+', 'J K U I'], 'Running strike berdaya dorong dahsyat'],
+      [['H'], 'Jab cepat pembuka serangan'],
+      [['J'], 'Hook samping melengkung'],
+      [['K'], 'Uppercut (melempar lawan ke udara)'],
+      [['L'], 'COUNTER — tangkap serangan lawan tepat waktu, lalu balas lurus otomatis!'],
+      [['P'], 'Grab bantingan — menembus blok turtle lawan'],
+      [['X'], 'Straight lurus (cross) — pukulan lurus bertenaga dari tangan aktif'],
+      [['LARI', '+', 'H J K L'], 'Running strike berdaya dorong dahsyat'],
+    ],
+  },
+  {
+    title: 'TARGET PUKULAN',
+    rows: [
+      [['Q'], 'Ganti titik kena: KEPALA (damage & stun besar, jalur KO cepat) ↔ DADA (stamina & kestabilan lawan tergerus, blok turtle hancur)'],
+      [['T'], 'Tombol alternatif untuk ganti target'],
+      [['MATA'], 'Target KEPALA = tepat di MATA lawan; target DADA = plat dada. Semua pukulan otomatis mengarah ke titik itu (pose, percikan & angka damage ikut pindah)'],
+      [['R', '+', 'KEPALA'], 'OVERDRIVE ke kepala = KEPALA LAWAN COPOT & terpental! Kabel putus, percikan listrik terus menyala dari leher — finisher instan'],
+    ],
+  },
+  {
+    title: 'DODGE — SIAPA CEPAT DIA DAPAT',
+    rows: [
+      [['SPACE'], 'DODGE instan ke arah gerak (tanpa arah = mundur). Tekan saat indikator ◎ muncul = timed dodge, serangan musuh tidak bisa kena'],
+      [['SPACE', '→', 'serang'], 'Habisi dodge dengan pukulan: setelah dodge, pukulan berikutnya keluar 38% lebih cepat & 22% lebih keras (DODGE STRIKE)'],
+      [['SPACE', 'tahan'], 'Tahan SPACE setelah dodge = langsung masuk blok'],
     ],
   },
   {
     title: 'BERTAHAN & COUNTER',
     rows: [
-      [['SPACE'], 'Tahan blok peredam benturan'],
-      [['Q'], 'TIMED DODGE — tekan saat indikator ◎ muncul di musuh untuk menghindar sempurna & dapat counter!'],
+      [['SPACE', 'tahan'], 'Blok peredam benturan (jaga tetap aktif selama ditahan)'],
+      [['L'], 'Counter parry — jendela singkat di awal gerakan; musuh terpelanting keluar dari pukulannya'],
     ],
   },
   {
     title: 'GAYA IPPO — DEMPSEY ROLL',
     rows: [
       [['E'], 'PEEK-A-BOO (tahan): goyang kepala angka 8, slip otomatis dari jab & cross sambil mendekat'],
-      [['E', '+', 'J K U I'], 'DEMPSEY SMASH: makin lama menenun goyangan, pukulan makin mematikan!'],
+      [['E', '+', 'H J K L'], 'DEMPSEY SMASH: makin lama menenun goyangan, pukulan makin mematikan!'],
+    ],
+  },
+  {
+    title: 'STAMINA',
+    rows: [
+      [['AUTO'], 'Pukulan & dodge kini 40% lebih murah dan tenaga pulih jauh lebih cepat — pertarungan panjang tidak lagi kehabisan napas'],
     ],
   },
   {
@@ -91,6 +124,7 @@ const CONTROLS: { title: string; rows: [string[], string][] }[] = [
       [['N'], 'Taunt Zeus sang juara (angkat kedua lengan sombong)'],
       [['R'], 'OVERDRIVE FINISHER saat meter 100% penuh'],
       [['[', ']'], 'Ubah kecepatan footwork secara instan'],
+      [['/', '.'], 'Ganti mode kamera (SIARAN · AKSI · DEKAT · RING LUAS · PUNDAK) secara instan'],
       [['ESC'], 'Jeda pertandingan / Pause'],
     ],
   },
@@ -107,6 +141,8 @@ export function Menu({
   onUltra,
   fw,
   onFw,
+  cam,
+  onCam,
   iq,
   onIq,
   game,
@@ -540,6 +576,9 @@ export function Menu({
             <div className="space-y-4">
               <div className="rounded-lg border border-white/10 bg-black/40 p-4">
                 <SfxPicker value={sfx} onPick={onSfx} />
+              </div>
+              <div className="rounded-lg border border-white/10 bg-black/40 p-4">
+                <CamPicker value={cam} onPick={onCam} />
               </div>
               <div className="rounded-lg border border-white/10 bg-black/40 p-4">
                 <FootworkPicker value={fw} onPick={onFw} />

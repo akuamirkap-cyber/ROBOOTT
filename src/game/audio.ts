@@ -418,8 +418,18 @@ export class Sfx {
     this.tone('square', 440, 880, 0.15, 0.08);
     this.tone('square', 660, 1320, 0.2, 0.08, 0.1);
   }
-  click() {
-    this.tone('square', 900, 600, 0.06, 0.07);
+  click(vol = 1) {
+    this.tone('square', 900, 600, 0.06, 0.07 * vol);
+  }
+  /** a barely-there servo tick: used when the stance hand changes, so the switch reads without shouting */
+  tick(vol = 1) {
+    this.tone('sine', 380, 250, 0.05, 0.03 * vol);
+  }
+  /** heavy steel screeching as a joint is torn apart (used for the head rip) */
+  screech(p: number) {
+    this.tone('sawtooth', 190, 62, 0.5, 0.1 + p * 0.08);
+    this.tone('square', 640, 180, 0.34, 0.05 + p * 0.05, 0.03);
+    this.crackle(0.7 + p * 0.3);
   }
   say(text: string) {
     if (this.muted || !('speechSynthesis' in window)) return;

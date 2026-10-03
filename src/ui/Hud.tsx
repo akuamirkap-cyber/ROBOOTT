@@ -216,7 +216,7 @@ export function Hud({ h, touch }: { h: HudState; touch: boolean }) {
           </div>
           <div>
             <Hint k="H J K">jab · hook · uppercut</Hint>
-            <Hint k="L">counter lurus</Hint>
+            <Hint k="L">counter lurus (½&#160;overdrive)</Hint>
             <Hint k="P">grab</Hint>
           </div>
           <div>

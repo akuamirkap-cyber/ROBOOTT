@@ -24,6 +24,9 @@ import {
   type RipOut,
 } from './cammath';
 export { CAM_MODES, type CamMode } from './cammath';
+// the strike data + the samplers, exported for the harness that guards them (striketest.mjs): the numbers the test
+// asserts against ARE the numbers the game runs, so a retune can never quietly break the balance rules
+export { MOVES, MOVE_EXTRA, UNBLOCKABLE, TELL, sampleKeys };
 
 // ------------------------------------------------------------------ data
 export interface OpponentDef {
@@ -353,20 +356,27 @@ const MOVES: Record<MoveId, Move> = {
       k(1.25, GUARD),
     ],
   },
-  // COUNTER STRAIGHT (L) — half an Overdrive. A long, lunging straight down the same line the Overdrive throws,
-  // with half the Overdrive's power (16 vs 32 damage, power 0.5, half the knockback). It is meant to be chained
-  // out of your own punches (H/J/K → L) and to punish a whiff or a blocked move.
+  // COUNTER STRAIGHT (L) — THE OVERDRIVE'S LITTLE BROTHER, AT EXACTLY HALF ITS POWER.
+  // Same punch, same line: the wind-up loads the shoulder all the way back and the fist crosses on the very key
+  // pose the Overdrive (see `bolt`) throws, so it reads as an Overdrive straight — then the load drops off a cliff
+  // (a deep fold into the coil, a lunge over a shorter distance) and it arrives with HALF the Overdrive's punch:
+  // 16 vs 32 damage, power 0.5, half the knockback, half the stun, half the chip on a guard. `striketest.mjs`
+  // asserts all five of those against `bolt` itself, so "half the Overdrive" can never quietly drift.
+  // It comes straight out of your own punches (H/J/K → L): a landed hit lets the next move cancel early, so the
+  // counter is the natural combo ender. It is a normal strike and NOT unblockable — blocking, sidestepping and a
+  // timed dodge all work on it, and the AI answers it the way it answers the Overdrive: it steps off the line.
   // The first frames are still a read: an incoming strike that lands inside the (short) parry window is CAUGHT —
-  // then the straight fires instantly with the 1.6× COUNTER bonus. And it stays a normal strike: it can be
-  // blocked, sidestepped and dodged like any other straight (the AI reads it and steps off the line).
+  // then the straight fires instantly with the 1.6× COUNTER bonus.
   counter: {
-    id: 'counter', arm: 1, dur: 0.95, strikeAt: 0.3, impact: 0.4, cancel: 0.6, dmg: 16, reach: 4.6, cost: 10, stun: 0.7, knock: 7, blockMul: 0.3, power: 0.5, hitY: 4.3, step: 2.6, kind: 'front',
+    id: 'counter', arm: 1, dur: 0.95, strikeAt: 0.3, impact: 0.4, cancel: 0.6, dmg: 16, reach: 4.6, cost: 10, stun: 0.6, knock: 6, blockMul: 0.25, power: 0.5, hitY: 4.3, step: 2.6, kind: 'front',
     keys: [
       k(0, GUARD),
       k(0.08, P(-0.44, -0.2, 0.42, -2.5), -0.5, -0.1, -0.28, 0.28, 'out'), // hands up, weight back (the catch)
       k(0.18, P(-0.3, 0.92, 0.42, -2.55), -1.0, -0.22, -0.55, 0.42, 'io'), // load the straight all the way back
-      k(0.3, P(-1.66, -0.92, 0, -0.02), 1.3, 0.54, 1.5, 0.09, 'in'), // the long straight (the Overdrive's line)
-      k(0.42, P(-1.7, -0.9, 0, 0.02), 1.42, 0.56, 1.56, 0.06), // the rotation keeps travelling past it
+      k(0.3, P(-1.66, -0.92, 0, -0.02), 1.3, 0.54, 1.5, 0.09, 'in'), // the long straight (the Overdrive's line EXACTLY)
+      // ...and then it STOPS there: the Overdrive's rotation keeps travelling past the target (1.42 / 1.56), the
+      // counter's dies on the fist — half the punch has to look like half the punch, not a bigger one.
+      k(0.42, P(-1.66, -0.9, 0, 0.0), 1.0, 0.42, 1.05, 0.1),
       k(0.62, P(-1.1, -0.5, 0.14, -0.95), 0.3, 0.2, 0.45, 0.15), // recoil
       k(0.95, GUARD),
     ],
@@ -408,6 +418,22 @@ const TELL_CHAIN = 0.16; // a follow-up hit of a combo that has already connecte
 const UNBLOCKABLE: MoveId[] = ['grab', 'slam', 'bolt']; // shown with a RED indicator, like God of War's unblockable attacks
 // how much a strike re-aims at the opponent's *current* position when it launches (1 = homing)
 const TRACK: Record<MoveId, number> = { jab: 0.2, cross: 0.25, hook: 0.85, upper: 0.4, slam: 0.4, bolt: 0.18, grab: 0.4, counter: 0.3 };
+
+/**
+ * HOW THE AI MEETS A MOVE. Blocking is the right answer to most punches, but anything that comes down a STRAIGHT
+ * LINE — the Overdrive and the counter straight that copies it — has to be stepped off instead: that is what keeps
+ * them dodgeable, and it is why the counter is a fair punch and not a free hit. Pure and exported so `striketest`
+ * can assert it (the AI may never simply stand there and guard it) instead of trusting the reader.
+ */
+export const defenceAgainst = (id: MoveId, dodge: number): 'block' | 'side' | 'back' => {
+  if (id === 'grab') return Math.random() < 0.5 ? 'back' : 'side'; // blocking is useless vs throws
+  if (id === 'slam') return Math.random() < 0.7 ? 'back' : 'side';
+  if (id === 'bolt') return Math.random() < 0.65 ? 'side' : 'back'; // a straight: sidestepping it is the answer
+  if (id === 'counter') return Math.random() < 0.7 ? 'side' : 'back'; // the counter straight is the same punch
+  if (id === 'hook') return Math.random() < dodge ? 'back' : 'block'; // wide sweep: a sidestep cannot clear it
+  if (id === 'upper') return Math.random() < dodge * 0.8 ? 'back' : 'block';
+  return Math.random() < dodge ? 'side' : 'block'; // straights are sidestepped
+};
 
 /**
  * COUNTER STRAIGHT (L). L is a punch — a lunging straight on the Overdrive's line at half its power, made to be
@@ -2494,14 +2520,7 @@ export class Game {
     const cap = iq >= 10 ? 0.995 : iq >= 3 ? 0.97 : iq >= 2 ? 0.95 : this.ultra ? 0.94 : 0.88;
     const p = Math.min(cap, def.react * hab * fatigue);
     if (Math.random() > p) return;
-    let act: 'block' | 'side' | 'back';
-    if (m.id === 'grab') act = Math.random() < 0.5 ? 'back' : 'side'; // blocking is useless vs throws
-    else if (m.id === 'slam') act = Math.random() < 0.7 ? 'back' : 'side';
-    else if (m.id === 'bolt') act = Math.random() < 0.65 ? 'side' : 'back'; // a straight: sidestepping it is the answer
-    else if (m.id === 'counter') act = Math.random() < 0.7 ? 'side' : 'back'; // the counter straight: same answer
-    else if (m.id === 'hook') act = Math.random() < def.dodge ? 'back' : 'block'; // wide sweep: sidestep fails
-    else if (m.id === 'upper') act = Math.random() < def.dodge * 0.8 ? 'back' : 'block';
-    else act = Math.random() < def.dodge ? 'side' : 'block'; // straights are sidestepped
+    const act = defenceAgainst(m.id, def.dodge);
     ai.reactAct = act;
     // reaction time: 0.17–0.27 s at 1× used to be slower than a jab (it lands in ~0.14 s), so jabs could never be defended.
     // Now 1× is a little faster, and a higher IQ shortens it a lot (10× ≈ 0.03 s).
@@ -3220,6 +3239,14 @@ export class Game {
       this.fx.ring(a.pos.x - toA.x * 2.4, a.pos.y - toA.y * 2.4, 0x9fe6ff, 9, 0.55);
       this.fx.spark(fxp, 36, 14, 0x9fe6ff, new THREE.Vector3(-toA.x, 0.05, -toA.y), 0.5, 0.6, 3);
       this.trauma = Math.min(1, this.trauma + 0.55);
+    }
+    if (m.id === 'counter') {
+      // HALF AN OVERDRIVE — and the same fireworks, scaled down: a tight shock ring at the fist and a short speed
+      // streak down the line of the punch, so a counter that connects reads as the Overdrive's little brother.
+      const fxp = new THREE.Vector3(a.pos.x - toA.x * 2.4, 3.5 * a.scale, a.pos.y - toA.y * 2.4);
+      this.fx.ring(a.pos.x - toA.x * 1.8, a.pos.y - toA.y * 1.8, 0x9fe6ff, 5.5, 0.42);
+      this.fx.spark(fxp, 20, 10, 0x9fe6ff, new THREE.Vector3(-toA.x, 0.05, -toA.y), 0.5, 0.5, 3);
+      this.trauma = Math.min(1, this.trauma + 0.28);
     }
     if (m.id === 'slam') {
       this.fx.ring(a.pos.x - toA.x * 1.8, a.pos.y - toA.y * 1.8, 0xffb040, 14, 0.7);

@@ -26,6 +26,7 @@ export class Sfx {
   ctx: AudioContext | null = null;
   private master!: GainNode;
   private sfxBus!: GainNode;
+  private punchBus!: GainNode;
   private toneF!: BiquadFilterNode;
   private musicBus!: GainNode;
   private crowdGain!: GainNode;
@@ -51,20 +52,40 @@ export class Sfx {
     this.ctx = c;
 
     const comp = c.createDynamicsCompressor();
-    comp.threshold.value = -14;
-    comp.ratio.value = 6;
+    comp.threshold.value = -12;
+    comp.knee.value = 8;
+    comp.ratio.value = 5;
+    comp.attack.value = 0.002;
+    comp.release.value = 0.14;
     this.master = c.createGain();
-    this.master.gain.value = this.muted ? 0 : 0.9;
+    this.master.gain.value = this.muted ? 0 : 0.95;
     this.master.connect(comp).connect(c.destination);
 
     // every effect goes through a profile-dependent low-pass → kills the harsh "tin tray" top end
     this.toneF = c.createBiquadFilter();
     this.toneF.type = 'lowpass';
-    this.toneF.Q.value = 0.55;
+    this.toneF.Q.value = 0.65;
     this.toneF.frequency.value = this.profileTone();
     this.toneF.connect(this.master);
     this.sfxBus = c.createGain();
     this.sfxBus.connect(this.toneF);
+
+    // Dedicated Heavy Punch Bus: warm analog-style soft-clip saturation + sub-bass shelf boost for massive impact weight!
+    const shaper = c.createWaveShaper();
+    const curve = new Float32Array(1024);
+    for (let i = 0; i < 1024; i++) {
+      const x = (i * 2) / 1023 - 1;
+      curve[i] = Math.tanh(x * 2.2) / Math.tanh(2.2);
+    }
+    shaper.curve = curve;
+    shaper.oversample = '2x';
+    const subBoost = c.createBiquadFilter();
+    subBoost.type = 'lowshelf';
+    subBoost.frequency.value = 115;
+    subBoost.gain.value = 5.5;
+    this.punchBus = c.createGain();
+    this.punchBus.gain.value = 1.15;
+    this.punchBus.connect(subBoost).connect(shaper).connect(this.toneF);
 
     // reverb (arena feel)
     const len = Math.floor(c.sampleRate * 1.6);
@@ -198,111 +219,135 @@ export class Sfx {
 
   // ------------------------------------------------------------ movement
   whoosh(p: number) {
-    this.noise(0.18 + 0.18 * p, 'bandpass', 320, 1300 + 1300 * p, 0.2 + 0.3 * p, 0, 0.8);
-    this.tone('sawtooth', 100, 230 + 90 * p, 0.2, 0.05);
+    // Heavy air-cutting Doppler whoosh + hydraulic actuator surge + turbine spin-up
+    this.noise(0.18 + 0.16 * p, 'bandpass', 240, 1450 + 1200 * p, 0.32 + 0.36 * p, 0, 0.85, this.punchBus);
+    this.noise(0.12 + 0.1 * p, 'lowpass', 480, 140, 0.28 + 0.25 * p, 0.02, 0.9, this.punchBus);
+    this.tone('sawtooth', 95, 260 + 110 * p, 0.18, 0.07 + 0.05 * p);
+    this.tone('sine', 140, 68, 0.14, 0.18 + 0.15 * p, 0.01, this.punchBus);
   }
   servo() {
-    this.tone('sawtooth', 150, 300, 0.2, 0.03);
+    this.tone('sawtooth', 165, 340, 0.16, 0.045);
+    this.tone('triangle', 95, 190, 0.14, 0.06);
   }
   dodge() {
-    this.noise(0.25, 'bandpass', 500, 3200, 0.28, 0, 1.2);
+    this.noise(0.24, 'bandpass', 450, 3400, 0.34, 0, 1.15);
+    this.tone('sine', 130, 52, 0.18, 0.28, 0, this.punchBus);
   }
 
   step(scale: number) {
     const s = scale;
     switch (this.profile) {
       case 'hydraulic':
-        this.tone('sine', 92, 40, 0.14, 0.4 * s);
-        this.noise(0.07, 'lowpass', 600, 120, 0.3 * s);
-        this.noise(0.06, 'bandpass', 3000, 1700, 0.09 * s, 0.01, 0.8);
+        this.tone('sine', 92, 36, 0.15, 0.46 * s, 0, this.punchBus);
+        this.noise(0.07, 'lowpass', 600, 120, 0.32 * s);
+        this.noise(0.06, 'bandpass', 3000, 1700, 0.1 * s, 0.01, 0.8);
         break;
       case 'glove':
-        this.tone('sine', 80, 40, 0.12, 0.34 * s);
+        this.tone('sine', 80, 38, 0.13, 0.38 * s, 0, this.punchBus);
         this.noise(0.08, 'lowpass', 400, 100, 0.34 * s);
         break;
       case 'cinema':
-        this.tone('sine', 75, 32, 0.2, 0.5 * s);
+        this.tone('sine', 75, 30, 0.22, 0.54 * s, 0, this.punchBus);
         this.noise(0.1, 'lowpass', 700, 100, 0.4 * s);
         this.noise(0.06, 'bandpass', 680, 420, 0.12 * s, 0, 6);
         break;
       default:
-        this.tone('sine', 88, 38, 0.15, 0.45 * s);
+        this.tone('sine', 88, 36, 0.16, 0.48 * s, 0, this.punchBus);
         this.noise(0.09, 'lowpass', 520, 110, 0.4 * s);
         this.noise(0.05, 'bandpass', 600, 380, 0.12 * s, 0, 5);
     }
+    // THE TONNAGE under every profile: a sub thump that you feel more than hear, and a short steel clank off the
+    // sole plate — a multi-tonne machine, not a man in a suit
+    this.tone('sine', 52, 28, 0.21, 0.3 * s, 0, this.punchBus);
+    this.noise(0.035, 'bandpass', 2500, 1800, 0.075 * s, 0.004, 9);
+    this.noise(0.12, 'lowpass', 260, 80, 0.22 * s, 0.01);
   }
 
   // ------------------------------------------------------------ impacts
   hit(p: number) {
     p = clamp01(p);
     const r = 0.92 + Math.random() * 0.16;
+    const pb = this.punchBus;
     this.crackle(p); // + the crackle of the sparks flying off the metal
+
+    // Layer 1 (Shared across all profiles): Ultra-sharp 15ms knuckle-to-armor transient snap + deep sub-bass cannon drop!
+    this.tone('triangle', (1450 + 600 * p) * r, 160, 0.024, 0.55 + 0.35 * p, 0, pb);
+    this.noise(0.022, 'bandpass', 2600 * r, 950, 0.65 + 0.35 * p, 0, 1.1, pb);
+    this.tone('sine', (96 + 28 * p) * r, 24, 0.38 + 0.32 * p, 1.15 + 0.45 * p, 0, pb);
+
     switch (this.profile) {
       case 'hydraulic':
-        this.tone('sine', (105 + 30 * p) * r, 42, 0.22 + 0.2 * p, 1.0);
-        this.noise(0.12 + 0.06 * p, 'lowpass', 1100, 150, 0.8);
-        this.noise(0.2 + 0.14 * p, 'bandpass', 4200, 1600, 0.36, 0.015, 0.7); // pneumatic hiss
-        this.tone('sawtooth', 210 * r, 70, 0.12, 0.2); // servo clunk
-        this.noise(0.06, 'bandpass', 950 * r, 520, 0.45, 0, 5); // metal tap
-        if (p > 0.45) this.tone('sine', 58, 26, 0.6, 0.7 * p);
+        // Heavy hydraulic piston slam + titanium plate crunch + pressurized steam blowoff
+        this.tone('sine', (135 + 45 * p) * r, 36, 0.26 + 0.22 * p, 1.15, 0, pb);
+        this.noise(0.16 + 0.1 * p, 'lowpass', 1650, 130, 0.95, 0, 0.9, pb);
+        this.noise(0.08 + 0.04 * p, 'bandpass', 780 * r, 360, 0.72, 0, 3.2, pb); // thick armor plate dent
+        this.modal([172 * r, 264 * r, 412 * r, 585 * r], 0.16 + 0.1 * p, 0.22);
+        this.noise(0.22 + 0.16 * p, 'bandpass', 4200, 1450, 0.42, 0.014, 0.75); // high-pressure pneumatic hiss
+        this.tone('sawtooth', 260 * r, 62, 0.15, 0.28, 0.005, pb); // heavy servo recoil groan
+        if (p > 0.4) this.tone('sine', 64, 22, 0.65, 0.95 * p, 0.01, pb);
         break;
       case 'glove':
-        this.noise(0.07, 'bandpass', 2000 * r, 900, 0.7, 0, 0.9); // leather slap
-        this.tone('sine', (115 + 25 * p) * r, 44, 0.2 + 0.15 * p, 1.05);
-        this.noise(0.16 + 0.1 * p, 'lowpass', 800, 120, 0.9);
-        this.modal([320 * r, 470 * r], 0.07, 0.07);
-        if (p > 0.4) this.tone('sine', 66, 30, 0.5, 0.7 * p);
+        this.noise(0.075, 'bandpass', 2100 * r, 850, 0.85, 0, 0.9, pb); // heavy leather/steel slap
+        this.tone('sine', (128 + 35 * p) * r, 38, 0.24 + 0.18 * p, 1.2, 0, pb);
+        this.noise(0.18 + 0.12 * p, 'lowpass', 1100, 110, 0.95, 0, 0.85, pb);
+        this.modal([290 * r, 435 * r], 0.09, 0.12);
+        if (p > 0.35) this.tone('sine', 68, 25, 0.55, 0.9 * p, 0, pb);
         break;
       case 'cinema':
-        this.tone('sine', 78 * r, 24, 0.9 + 0.7 * p, 1.1 + 0.2 * p);
-        this.noise(0.09, 'highpass', 1600, 700, 0.5);
-        this.noise(0.45 + 0.3 * p, 'lowpass', 2400, 90, 0.85);
-        this.modal([196 * r, 294 * r, 441 * r, 662 * r], 0.28 + 0.2 * p, 0.15);
-        this.noise(1.1 + 0.6 * p, 'lowpass', 500, 50, 0.3, 0.03);
-        this.tone('sawtooth', 330 * r, 60, 0.25, 0.1);
+        this.tone('sine', 88 * r, 22, 0.85 + 0.65 * p, 1.25 + 0.3 * p, 0, pb);
+        this.noise(0.09, 'highpass', 1600, 680, 0.6, 0, 1, pb);
+        this.noise(0.45 + 0.3 * p, 'lowpass', 2600, 85, 0.95, 0, 0.9, pb);
+        this.modal([184 * r, 278 * r, 420 * r, 640 * r], 0.28 + 0.2 * p, 0.2);
+        this.noise(0.9 + 0.5 * p, 'lowpass', 520, 48, 0.42, 0.025, 0.8, pb);
+        this.tone('sawtooth', 340 * r, 55, 0.26, 0.18, 0, pb);
         break;
       default: // heavy steel
-        this.tone('sine', (130 + 40 * p) * r, 36, 0.3 + 0.3 * p, 1.0 + 0.3 * p);
-        this.tone('sine', 62 * r, 28, 0.5 + 0.5 * p, 0.5 + 0.5 * p);
-        this.noise(0.22 + 0.16 * p, 'lowpass', 1500, 130, 0.85);
-        this.noise(0.13, 'bandpass', 560 * r, 300, 0.5, 0, 3.2); // dull steel clank
-        this.modal([151 * r, 233 * r, 347 * r, 489 * r], 0.2 + 0.12 * p, 0.2);
-        this.noise(0.03, 'highpass', 2200, 1400, 0.16);
-        if (p > 0.55) this.noise(0.7, 'lowpass', 420, 55, 0.5);
+        this.tone('sine', (142 + 48 * p) * r, 32, 0.32 + 0.28 * p, 1.15 + 0.35 * p, 0, pb);
+        this.tone('sine', 66 * r, 24, 0.55 + 0.45 * p, 0.75 + 0.5 * p, 0, pb);
+        this.noise(0.24 + 0.16 * p, 'lowpass', 1750, 120, 0.95, 0, 0.9, pb);
+        this.noise(0.14, 'bandpass', 580 * r, 290, 0.68, 0, 3.2, pb); // thick steel armor clank
+        this.modal([151 * r, 233 * r, 347 * r, 489 * r], 0.22 + 0.12 * p, 0.26);
+        this.noise(0.04, 'highpass', 2200, 1400, 0.24);
+        if (p > 0.45) this.noise(0.65, 'lowpass', 460, 52, 0.6, 0.015, 0.85, pb);
     }
   }
 
   block(p: number) {
     p = clamp01(p);
     const r = 0.94 + Math.random() * 0.12;
+    const pb = this.punchBus;
+    // Heavy steel-on-steel guard clang + shock absorber compression
+    this.tone('triangle', 980 * r, 210, 0.02, 0.45 + 0.25 * p, 0, pb);
     switch (this.profile) {
       case 'hydraulic':
-        this.tone('sine', 100 * r, 55, 0.15, 0.6);
-        this.noise(0.12, 'bandpass', 3800, 2000, 0.28, 0, 0.8);
-        this.noise(0.06, 'bandpass', 800 * r, 500, 0.4, 0, 5);
+        this.tone('sine', 115 * r, 48, 0.18, 0.85, 0, pb);
+        this.noise(0.14, 'bandpass', 3800, 1850, 0.36, 0, 0.85);
+        this.noise(0.08, 'bandpass', 760 * r, 440, 0.58, 0, 4.5, pb);
+        this.modal([240 * r, 365 * r, 540 * r], 0.14, 0.18);
         break;
       case 'glove':
-        this.noise(0.06, 'bandpass', 1500, 800, 0.55, 0, 0.9);
-        this.tone('sine', 95 * r, 50, 0.14, 0.6);
-        this.noise(0.1, 'lowpass', 700, 120, 0.5);
+        this.noise(0.07, 'bandpass', 1500, 780, 0.68, 0, 0.9, pb);
+        this.tone('sine', 105 * r, 44, 0.16, 0.82, 0, pb);
+        this.noise(0.12, 'lowpass', 750, 115, 0.62, 0, 0.9, pb);
         break;
       case 'cinema':
-        this.noise(0.06, 'highpass', 1500, 800, 0.42);
-        this.tone('sine', 70 * r, 35, 0.3, 0.8);
-        this.modal([220 * r, 330 * r, 495 * r], 0.2, 0.14);
+        this.noise(0.07, 'highpass', 1500, 780, 0.5, 0, 1, pb);
+        this.tone('sine', 82 * r, 32, 0.34, 0.95, 0, pb);
+        this.modal([220 * r, 330 * r, 495 * r], 0.22, 0.2);
         break;
       default:
-        this.noise(0.14, 'bandpass', 420 * r, 260, 0.65, 0, 4);
-        this.modal([180 * r, 270 * r, 390 * r], 0.2 + 0.08 * p, 0.2);
-        this.tone('sine', 105 * r, 52, 0.16, 0.6);
+        this.noise(0.15, 'bandpass', 460 * r, 260, 0.78, 0, 4, pb);
+        this.modal([180 * r, 270 * r, 390 * r], 0.22 + 0.08 * p, 0.25);
+        this.tone('sine', 115 * r, 46, 0.18, 0.82, 0, pb);
     }
   }
 
   guardBreak() {
-    this.noise(0.55, 'lowpass', 3200, 180, 0.8);
-    this.tone('sawtooth', 280, 55, 0.5, 0.2);
-    this.tone('sine', 70, 26, 0.8, 0.9);
-    this.modal([147, 221], 0.3, 0.2);
+    const pb = this.punchBus;
+    this.noise(0.58, 'lowpass', 3400, 160, 0.95, 0, 0.9, pb);
+    this.tone('sawtooth', 320, 48, 0.52, 0.32, 0, pb);
+    this.tone('sine', 84, 22, 0.85, 1.15, 0, pb);
+    this.modal([147, 221, 334], 0.36, 0.28);
   }
 
   /** the ring ropes stretching and snapping back */
@@ -311,6 +356,15 @@ export class Sfx {
     this.noise(0.35 + 0.25 * p, 'bandpass', 220, 90, 0.3 + 0.2 * p, 0, 2.5);
     this.tone('sine', 82, 46, 0.35, 0.35 * p + 0.15);
     this.noise(0.18, 'lowpass', 900, 160, 0.3);
+  }
+
+  /** a two-ton body slamming the ropes: the posts boom, the turnbuckles rattle and the canvas thumps */
+  ropeSlam(p: number) {
+    p = clamp01(p);
+    this.tone('sine', 58, 30, 0.42, 0.5 + 0.4 * p, 0, this.punchBus);
+    this.noise(0.22, 'lowpass', 380, 90, 0.45 + 0.3 * p);
+    this.noise(0.5 + 0.3 * p, 'bandpass', 1400, 600, 0.12 + 0.12 * p, 0.02, 3); // steel cable twang
+    this.tone('triangle', 240, 170, 0.28, 0.08 + 0.08 * p);
   }
 
   bell(n: number) {

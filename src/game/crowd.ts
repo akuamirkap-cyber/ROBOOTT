@@ -147,38 +147,48 @@ export function buildCrowd(scene: THREE.Scene, spots: Spot[], phoneCount: number
   const neckG = new THREE.CylinderGeometry(0.125, 0.16, 0.2, 6);
   const headG = new THREE.SphereGeometry(0.345, 12, 8);
   headG.scale(1.0, 1.08, 1.03);
-  const browG = new THREE.BoxGeometry(0.37, 0.062, 0.12);
-  const eyeG = new THREE.BoxGeometry(0.26, 0.062, 0.09); // a narrow dark bar under the brow: eyes in shadow
-  const noseG = new THREE.BoxGeometry(0.065, 0.11, 0.09);
+  // the face sits ON the skull (every feature is a small lens placed at the surface of the head ellipsoid, so
+  // nothing is buried inside the head or pokes out of the cheeks)
+  const browG = new THREE.SphereGeometry(1, 8, 4);
+  browG.scale(0.2, 0.042, 0.085); // one soft brow ridge that follows the curve of the forehead
+  const eyeG = new THREE.SphereGeometry(1, 7, 5);
+  eyeG.scale(0.052, 0.04, 0.034); // two dark eyes
+  const noseG = new THREE.BoxGeometry(0.06, 0.11, 0.08);
   const mouthG = new THREE.SphereGeometry(0.062, 6, 4);
   mouthG.scale(1.5, 0.7, 0.5);
   const armUpG = new THREE.CapsuleGeometry(0.105, 0.2, 2, 6); // pivot at the shoulder
   armUpG.translate(0, -0.17, 0);
   const armLoG = new THREE.CapsuleGeometry(0.09, 0.22, 2, 6); // pivot at the elbow
   armLoG.translate(0, -0.2, 0);
-  const legG = new THREE.BoxGeometry(0.32, 0.78, 0.4); // legs are mostly behind the seats: plain boxes are enough
-  const thighG = new THREE.BoxGeometry(0.32, 0.6, 0.4);
-  const shinG = new THREE.BoxGeometry(0.32, 0.54, 0.38);
-  // the crop only covers the top of the skull and stops just above the brow — a full hemisphere read as a helmet
-  const hairG = new THREE.SphereGeometry(0.398, 14, 6, 0, Math.PI * 2, 0, Math.PI * 0.37);
-  const hairBackG = new THREE.BoxGeometry(0.62, 0.62, 0.18); // long hair hanging down behind the head
-  const bunG = new THREE.SphereGeometry(0.125, 6, 5);
-  const brimG = new THREE.BoxGeometry(0.46, 0.05, 0.3);
-  const shirtG = new THREE.BoxGeometry(0.28, 0.6, 0.04);
-  const tieG = new THREE.BoxGeometry(0.085, 0.44, 0.04);
+  const handG = new THREE.SphereGeometry(0.1, 7, 5); // a real hand at the end of the forearm
+  handG.scale(1, 1.15, 0.7);
+  const legG = new THREE.BoxGeometry(0.3, 0.78, 0.36); // legs are mostly behind the seats: plain boxes are enough
+  const thighG = new THREE.BoxGeometry(0.3, 0.6, 0.36);
+  const shinG = new THREE.BoxGeometry(0.28, 0.54, 0.32);
+  // hair: a cap that hugs the skull (radius a hair above the head, rim just above the brow) — not a floating helmet
+  const hairG = new THREE.SphereGeometry(0.366, 14, 7, 0, Math.PI * 2, 0, Math.PI * 0.42);
+  const hairBackG = new RoundedBoxGeometry(0.58, 0.6, 0.2, 1, 0.08); // long hair hanging down behind the head
+  const bunG = new THREE.SphereGeometry(0.125, 7, 5);
+  const brimG = new THREE.BoxGeometry(0.44, 0.045, 0.3);
+  // suit: the shirt front and the tie are thin tapered shells that follow the chest instead of floating off it
+  const shirtG = tapered(0.26, 0.92, 0.57, 0.04, 0.7, 1);
+  shirtG.translate(0, 0, 0.022);
+  const tieG = tapered(0.085, 0.62, 0.6, 0.02, 0.72, 1);
+  tieG.translate(0, 0, 0.036);
 
   const torso = mk(torsoG, N);
   const shoulders = mk(shoulderG, N * 2);
   const neck = mk(neckG, N);
   const head = mk(headG, N);
   const brow = mk(browG, N);
-  const eyes = mk(eyeG, N, std(0.45));
+  const eyes = mk(eyeG, N * 2, std(0.45));
   (eyes.material as THREE.MeshStandardMaterial).color.set(0x1a1b20);
   const nose = mk(noseG, N);
   const mouth = mk(mouthG, N, std(0.6));
   (mouth.material as THREE.MeshStandardMaterial).color.set(0x3a1418);
   const armUp = mk(armUpG, N * 2);
   const armLo = mk(armLoG, N * 2, std(0.72));
+  const hands = mk(handG, N * 2, std(0.75));
   const legs = mk(legG, N * 2);
   const thighs = mk(thighG, N * 2);
   const shins = mk(shinG, N * 2);
@@ -213,6 +223,8 @@ export function buildCrowd(scene: THREE.Scene, spots: Spot[], phoneCount: number
     }
     const skin = jit(pick(SKINS), 0.04).clone();
     head.setColorAt(i, skin);
+    hands.setColorAt(i * 2, skin);
+    hands.setColorAt(i * 2 + 1, skin);
     neck.setColorAt(i, skin.clone().multiplyScalar(0.92));
     nose.setColorAt(i, skin.clone().multiplyScalar(0.96));
     // bare forearms for the short-sleeved tee crowd, sleeves for the suits
@@ -308,10 +320,15 @@ export function buildCrowd(scene: THREE.Scene, spots: Spot[], phoneCount: number
     return u * u * (3 - 2 * u);
   };
   const H = 0.0001; // "hidden" scale
-  const update = (t: number, hype: number) => {
+  // `cohort` (0/1/undefined): poses only every other person — called with alternating cohorts on consecutive
+  // frames the whole crowd still moves at 30 Hz, but the CPU cost is spread evenly instead of spiking every
+  // second frame
+  const update = (t: number, hype: number, cohort?: number) => {
     const amp = 0.025 + hype * 0.2; // small, slow hops
     const spdMul = 1 + hype * 0.22;
-    for (let i = 0; i < N; i++) {
+    const i0 = cohort === undefined ? 0 : cohort;
+    const di = cohort === undefined ? 1 : 2;
+    for (let i = i0; i < N; i += di) {
       const p = people[i];
       const cheer = sstep(p.thr, p.thr + 0.3, hype * 1.15);
       const beat = Math.sin(t * p.sp * spdMul + p.ph);
@@ -339,27 +356,30 @@ export function buildCrowd(scene: THREE.Scene, spots: Spot[], phoneCount: number
       // body: shoulders first, then the neck, then the head with its own features
       put(torso, i, bx, by, bz, c, s, 0, torsoY * k + bob, sit ? -0.02 : 0, sit ? -0.04 * cheer : 0, 0, k, gw);
       put(neck, i, bx, by, bz, c, s, 0, (headY - 0.31) * k + bob, 0.02 * k, 0, 0, k);
-      put(shoulders, i * 2, bx, by, bz, ch, sh, -0.39 * gw * k, (shY - 0.03) * k + bob, 0, 0, 0, k, gw);
-      put(shoulders, i * 2 + 1, bx, by, bz, ch, sh, 0.39 * gw * k, (shY - 0.03) * k + bob, 0, 0, 0, k, gw);
+      put(shoulders, i * 2, bx, by, bz, c, s, -0.39 * gw * k, (shY - 0.03) * k + bob, 0, 0, 0, k, gw);
+      put(shoulders, i * 2 + 1, bx, by, bz, c, s, 0.39 * gw * k, (shY - 0.03) * k + bob, 0, 0, 0, k, gw);
       put(head, i, bx, by, bz, ch, sh, 0, headY * k + bob, 0, 0, 0, k);
-      // face: a heavy brow over one dark eye bar, a nose and a mouth — it reads at 30 m and it is not a toy face
-      put(brow, i, bx, by, bz, ch, sh, 0, (headY + 0.08) * k + bob, 0.28 * k, 0, 0, k);
-      put(eyes, i, bx, by, bz, ch, sh, 0, (headY + 0.02) * k + bob, 0.3 * k, 0, 0, k);
-      put(nose, i, bx, by, bz, ch, sh, 0, (headY - 0.04) * k + bob, 0.31 * k, 0, 0, k);
-      put(mouth, i, bx, by, bz, ch, sh, 0, (headY - 0.16) * k + bob, 0.29 * k, 0, 0, k * (0.4 + cheer * 0.7 * (0.5 + 0.5 * Math.max(0, beat))));
+      // face: brow ridge, two eyes, a nose and a mouth — each one sitting on the surface of the skull
+      put(brow, i, bx, by, bz, ch, sh, 0, (headY + 0.11) * k + bob, 0.33 * k, 0.25, 0, k);
+      put(eyes, i * 2, bx, by, bz, ch, sh, -0.115 * k, (headY + 0.035) * k + bob, 0.33 * k, 0, 0, k);
+      put(eyes, i * 2 + 1, bx, by, bz, ch, sh, 0.115 * k, (headY + 0.035) * k + bob, 0.33 * k, 0, 0, k);
+      put(nose, i, bx, by, bz, ch, sh, 0, (headY - 0.045) * k + bob, 0.345 * k, 0.1, 0, k);
+      put(mouth, i, bx, by, bz, ch, sh, 0, (headY - 0.165) * k + bob, 0.322 * k, 0, 0, k * (0.4 + cheer * 0.7 * (0.5 + 0.5 * Math.max(0, beat))));
 
       // hair: bald / short crop / long (hangs behind the head) / bun on top / big curly / cap
       const hs = p.hair;
-      const domeSc = hs === BALD ? H : hs === CURLY ? k * 1.24 : hs === LONG ? k * 1.04 : k;
-      const domeY = hs === CURLY ? 0.09 : 0.05;
-      put(hair, i, bx, by, bz, ch, sh, 0, (headY + domeY) * k + bob, (hs === CURLY ? -0.05 : -0.02) * k, 0, 0, domeSc);
-      put(hairBack, i, bx, by, bz, ch, sh, 0, (headY - 0.14) * k + bob, -0.28 * k, 0, 0, hs === LONG ? k : H);
+      const domeSc = hs === BALD ? H : hs === CURLY ? k * 1.17 : hs === LONG ? k * 1.03 : k;
+      const domeY = hs === CURLY ? 0.0 : 0.03;
+      put(hair, i, bx, by, bz, ch, sh, 0, (headY + domeY) * k + bob, (hs === CURLY ? -0.04 : -0.02) * k, 0, 0, domeSc);
+      put(hairBack, i, bx, by, bz, ch, sh, 0, (headY - 0.12) * k + bob, -0.27 * k, 0, 0, hs === LONG ? k : H);
       put(bun, i, bx, by, bz, ch, sh, 0, (headY + 0.4) * k + bob, -0.15 * k, 0, 0, hs === BUN ? k : H);
-      put(brim, i, bx, by, bz, ch, sh, 0, (headY + 0.17) * k + bob, 0.33 * k, 0.08, 0, hs === CAP ? k : H);
+      put(brim, i, bx, by, bz, ch, sh, 0, (headY + 0.14) * k + bob, 0.34 * k, 0.1, 0, hs === CAP ? k : H);
 
-      // suit: white shirt front + tie
-      put(shirt, i, bx, by, bz, c, s, 0, (torsoY + 0.2) * k + bob, 0.32 * gw * k, 0, 0, p.suit ? k : H);
-      put(tie, i, bx, by, bz, c, s, 0, (torsoY + 0.14) * k + bob, 0.345 * gw * k, 0, 0, p.suit ? k : H);
+      // suit: the shirt front hugs the chest under the open jacket, the tie hangs from the collar
+      const tz = sit ? -0.02 : 0;
+      const tax = sit ? -0.04 * cheer : 0;
+      put(shirt, i, bx, by, bz, c, s, 0, (torsoY + 0.03) * k + bob, tz, tax, 0, p.suit ? k : H, gw);
+      put(tie, i, bx, by, bz, c, s, 0, (torsoY + 0.12) * k + bob, tz, tax, 0, p.suit ? k : H, gw);
 
       // legs: standing = one straight pair; seated = thighs forward on the chair + shins hanging down
       if (sit) {
@@ -397,11 +417,11 @@ export function buildCrowd(scene: THREE.Scene, spots: Spot[], phoneCount: number
           azR = -azL;
           ebL = ebR = THREE.MathUtils.lerp(0.55, 0.4 + Math.abs(wave) * 0.6, up);
         } else {
-          // calm → hands rest on the lap; excited → a compact applause in front of the chest
-          axL = axR = THREE.MathUtils.lerp(-0.45, -0.95, cheer);
-          azL = THREE.MathUtils.lerp(0.16, 0.34 + 0.22 * Math.sin(t * 4.4 + p.ph), cheer);
+          // calm → the hands rest on the knees (a nearly straight arm); excited → a compact applause in front of the chest
+          axL = axR = THREE.MathUtils.lerp(-0.5, -1.0, cheer);
+          azL = THREE.MathUtils.lerp(0.1, 0.34 + 0.22 * Math.sin(t * 4.4 + p.ph), cheer);
           azR = -azL;
-          ebL = ebR = THREE.MathUtils.lerp(0.5, 1.05 + 0.3 * Math.sin(t * 4.4 + p.ph + 1.2), cheer);
+          ebL = ebR = THREE.MathUtils.lerp(0.02, 1.1 + 0.3 * Math.sin(t * 4.4 + p.ph + 1.2), cheer);
         }
       } else {
         axL = THREE.MathUtils.lerp(idleSway, -2.65 + wave, cheer);
@@ -418,25 +438,36 @@ export function buildCrowd(scene: THREE.Scene, spots: Spot[], phoneCount: number
       }
       const shYk = shY * k + bob;
       const shX = 0.41 * gw * k;
-      // upper arm from the shoulder, forearm hung off the elbow
+      // upper arm from the shoulder, forearm hung off the elbow, hand on the end of the forearm.
+      // The elbow is the SHOULDER POINT plus the upper-arm vector rotated by the arm angles (the shoulder offset
+      // itself only turns with the body yaw — rotating it by the arm angles used to throw the forearms off the body).
       put(armUp, i * 2, bx, by, bz, c, s, -shX, shYk, 0, axL, azL, k);
       put(armUp, i * 2 + 1, bx, by, bz, c, s, shX, shYk, 0, axR, azR, k);
-      const elL = at(bx, by, bz, c, s, -shX, shYk, 0, axL, azL, k);
-      const elR = at(bx, by, bz, c, s, shX, shYk, 0, axR, azR, k);
+      const sLx = bx - c * shX;
+      const sLz = bz + s * shX;
+      const sRx = bx + c * shX;
+      const sRz = bz - s * shX;
+      const UPPER = 0.36; // shoulder → elbow
+      const FORE = 0.4; // elbow → hand
+      const elL = at(sLx, by + shYk, sLz, c, s, 0, -UPPER, 0, axL, azL, k);
+      const elR = at(sRx, by + shYk, sRz, c, s, 0, -UPPER, 0, axR, azR, k);
       const exL = axL - ebL;
       const exR = axR - ebR;
       put(armLo, i * 2, elL.x, elL.y, elL.z, c, s, 0, 0, 0, exL, azL, k);
       put(armLo, i * 2 + 1, elR.x, elR.y, elR.z, c, s, 0, 0, 0, exR, azR, k);
+      const hL = at(elL.x, elL.y, elL.z, c, s, 0, -FORE, 0, exL, azL, k);
+      const hR = at(elR.x, elR.y, elR.z, c, s, 0, -FORE, 0, exR, azR, k);
+      put(hands, i * 2, hL.x, hL.y, hL.z, c, s, 0, 0, 0, exL, azL, k);
+      put(hands, i * 2 + 1, hR.x, hR.y, hR.z, c, s, 0, 0, 0, exR, azR, k);
 
       if (p.phone >= 0) {
         const bl = phoneBlink[p.phone];
         const on = Math.sin(t * bl.sp + bl.ph) > -0.4 ? 1 : 0;
-        // the phone rides at the end of the forearm
-        const hand = at(elR.x, elR.y, elR.z, c, s, 0, -0.5 * k, 0, exR, azR, 1);
-        put(phones, p.phone, hand.x, hand.y, hand.z, c, s, 0, 0.1 * k, 0.12 * k, 0, 0, on * (0.95 + hype * 0.2) * k + H);
+        // the phone is held in the right hand, screen towards the face
+        put(phones, p.phone, hR.x, hR.y, hR.z, c, s, 0, 0.14 * k, 0.1 * k, exR + 0.35, azR, on * (0.95 + hype * 0.2) * k + H);
       }
     }
-    for (const m of [torso, neck, head, brow, eyes, nose, mouth, shoulders, armUp, armLo, legs, thighs, shins, hair, hairBack, bun, brim, shirt, tie, phones]) m.instanceMatrix.needsUpdate = true;
+    for (const m of [torso, neck, head, brow, eyes, nose, mouth, shoulders, armUp, armLo, hands, legs, thighs, shins, hair, hairBack, bun, brim, shirt, tie, phones]) m.instanceMatrix.needsUpdate = true;
   };
 
   update(0, 0.1);

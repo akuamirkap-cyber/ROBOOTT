@@ -58,33 +58,45 @@ export function SfxPicker({ value, onPick }: { value: SfxProfile; onPick: (id: S
 export function DifficultyPicker({ ultra, onPick }: { ultra: boolean; onPick: (ultra: boolean) => void }) {
   return (
     <div>
-      <SectionTitle>TINGKAT KESULITAN</SectionTitle>
+      <SectionTitle
+        right={
+          <span className={`font-tech text-[8px] font-bold tracking-[0.2em] ${ultra ? 'text-rose-400' : 'text-amber-300'}`}>
+            {ultra ? 'MODE EKSTREM AKTIF' : 'MODE STANDAR'}
+          </span>
+        }
+      >
+        MODE KOMPETISI
+      </SectionTitle>
       <div className="grid grid-cols-2 gap-2">
         <button
           onClick={() => onPick(false)}
-          className={`tile cut pointer-events-auto relative px-3 py-2.5 text-left ${!ultra ? 'tile-on' : ''}`}
-          style={cssVar('--c', '#ffd34a')}
+          className={`tile cut-sm pointer-events-auto relative px-3 py-2 text-left ${!ultra ? 'tile-on' : ''}`}
+          style={cssVar('--c', '#38bdf8')}
         >
           <div className="flex items-center justify-between">
-            <span className="font-display text-[22px] tracking-wider" style={{ color: !ultra ? '#ffd34a' : '#ffffff' }}>
-              NORMAL
+            <span className="font-display text-[19px] leading-none tracking-wider" style={{ color: !ultra ? '#7dd3fc' : '#ffffff' }}>
+              NORMAL LEAGUE
             </span>
-            <span className="font-tech text-[10px] text-white/50">★☆☆</span>
+            <span className="rounded bg-sky-500/20 px-1.5 py-0.5 font-tech text-[8px] font-bold text-sky-300">★ 1.0×</span>
           </div>
-          <div className="text-[10px] leading-tight text-white/55">Lawan standar — cocok untuk belajar</div>
+          <div className="mt-1 font-tech text-[8px] tracking-wider text-white/55">STAT STANDAR · COCOK PEMULA</div>
         </button>
         <button
           onClick={() => onPick(true)}
-          className={`tile ultra-btn cut pointer-events-auto relative overflow-hidden px-3 py-2.5 text-left ${ultra ? 'tile-on' : ''}`}
+          className={`tile ultra-btn cut-sm pointer-events-auto relative overflow-hidden px-3 py-2 text-left ${ultra ? 'tile-on' : ''}`}
           style={cssVar('--c', ULTRA_COLOR)}
         >
           <div className="relative z-10 flex items-center justify-between">
-            <span className="font-display text-[22px] tracking-wider" style={{ color: ULTRA_COLOR }}>
+            <span className="font-display text-[19px] leading-none tracking-wider" style={{ color: ULTRA_COLOR }}>
               ULTRA HARD
             </span>
-            <span className="text-sm">{ultra ? '🔥' : '☠'}</span>
+            <span className="rounded bg-rose-500/25 px-1.5 py-0.5 font-tech text-[8px] font-bold text-rose-300">
+              {ultra ? '🔥 ON' : '☠ PRO'}
+            </span>
           </div>
-          <div className="relative z-10 text-[10px] leading-tight text-white/65">HP +40% · serangan +30% · baca & balas super cepat · semua lawan punya Overdrive</div>
+          <div className="relative z-10 mt-1 font-tech text-[8px] tracking-wider text-rose-200/75">
+            HP +40% · DMG +30% · OVERDRIVE
+          </div>
         </button>
       </div>
     </div>
@@ -128,18 +140,26 @@ export function FootworkPicker({ value, onPick }: { value: number; onPick: (m: n
 const IQ_NAME: Record<number, string> = { 1: 'NORMAL', 2: 'PINTAR', 3: 'JENIUS', 10: 'SUPER AI', 12: 'STRATEGIS' };
 const IQ_LABEL: Record<number, string> = { 12: '★' }; // the strategist tier is not "12×", it is its own thing
 const IQ_SUB: Record<number, string> = {
-  1: 'Seperti biasa',
-  2: 'Baca & dodge lebih cepat',
-  3: 'Dodge presisi, batalkan serangan',
-  10: 'Hampir tak terkalahkan',
-  12: 'ULTRA CERDAS — punya rencana: mengamati gayamu, memancing, menyudutkan ke tali, menyimpan Overdrive untuk saat kamu lemah',
+  1: 'Refleks AI standar — pola serangan dasar',
+  2: 'Baca serangan & dodge lebih responsif',
+  3: 'Dodge presisi, feint & counter cepat',
+  10: 'Refleks nyaris sempurna & hukuman instan',
+  12: 'Taktik adaptif: memancing, menyudutkan & simpan Overdrive',
 };
 
 /** how many times smarter the enemy is: reads you faster, dodges and blocks more, counters harder */
 export function IqPicker({ value, onPick }: { value: number; onPick: (n: number) => void }) {
   return (
     <div>
-      <SectionTitle right={value >= 10 ? <span className="font-tech text-[9px] tracking-[0.2em] text-red-400">☠ EKSTREM</span> : undefined}>KECERDASAN MUSUH (AI)</SectionTitle>
+      <SectionTitle
+        right={
+          <span className={`font-tech text-[8px] font-bold tracking-[0.2em] ${value >= 10 ? 'text-amber-300' : 'text-purple-300'}`}>
+            TIER: {IQ_NAME[value]}
+          </span>
+        }
+      >
+        KECERDASAN AI LAWAN
+      </SectionTitle>
       <div className="grid grid-cols-5 gap-1.5">
         {IQ_STEPS.map((m) => {
           const on = m === value;
@@ -148,18 +168,21 @@ export function IqPicker({ value, onPick }: { value: number; onPick: (n: number)
             <button
               key={m}
               onClick={() => onPick(m)}
-              className={`tile cut-sm pointer-events-auto relative px-1 py-2 text-center ${on ? 'tile-on' : ''}`}
+              className={`tile cut-sm pointer-events-auto relative px-1 py-1.5 text-center ${on ? 'tile-on' : ''}`}
               style={cssVar('--c', col)}
             >
-              <div className="font-display text-[24px] leading-none" style={{ color: on ? col : '#ffffff' }}>
+              <div className="font-display text-[20px] leading-none" style={{ color: on ? col : '#ffffff' }}>
                 {IQ_LABEL[m] ?? `${m}×`}
               </div>
-              <div className="mt-0.5 font-tech text-[8px] tracking-[0.12em] text-white/60">{IQ_NAME[m]}</div>
+              <div className="mt-0.5 font-tech text-[7px] font-bold tracking-[0.1em] text-white/65">{IQ_NAME[m]}</div>
             </button>
           );
         })}
       </div>
-      <div className="mt-1.5 text-[10px] leading-tight text-white/50">{IQ_SUB[value] ?? ''} — makin tinggi, musuh membaca seranganmu lebih cepat, lebih sering dodge &amp; blok, dan membalas lebih tajam.</div>
+      <div className="mt-1.5 flex items-center gap-1.5 rounded border border-white/5 bg-white/[0.03] px-2 py-1 font-tech text-[8.5px] tracking-wide text-white/65">
+        <span className="text-amber-300">⚡</span>
+        <span className="truncate">{IQ_SUB[value] ?? ''}</span>
+      </div>
     </div>
   );
 }

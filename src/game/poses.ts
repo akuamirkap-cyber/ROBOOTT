@@ -67,12 +67,14 @@ export const FREESTYLE: Freestyle[] = [
     name: 'pound dada',
     tag: 'TAUNT!',
     say: 'Come on!',
-    dur: 1.5,
-    meter: 16,
-    glow: 1.6,
+    dur: 1.35,
+    meter: 18,
+    glow: 1.9,
     cues: [
-      { p: 0.26, s: 'beat' },
-      { p: 0.52, s: 'beat' },
+      { p: 0.2, s: 'beat' },
+      { p: 0.42, s: 'beat' },
+      { p: 0.64, s: 'beat' },
+      { p: 0.8, s: 'chin' },
     ],
   },
   {
@@ -211,6 +213,24 @@ export const FREESTYLE: Freestyle[] = [
       { p: 0.9, s: 'clap' },
     ],
   },
+  {
+    // 10 — 4: the FIST CLASH — both gloves slammed together in front of the sternum, three times, sparks on every hit,
+    // then a cocky chin-up "come get it"
+    id: 10,
+    key: 'Digit4',
+    name: 'adu tinju',
+    tag: 'ADU TINJU!',
+    say: "Let's go!",
+    dur: 1.6,
+    meter: 20,
+    glow: 2.2,
+    cues: [
+      { p: 0.2, s: 'clash' },
+      { p: 0.4, s: 'clash' },
+      { p: 0.6, s: 'clash' },
+      { p: 0.8, s: 'chin' },
+    ],
+  },
 ];
 
 export const freestyleOf = (style: number): Freestyle => FREESTYLE[clamp(Math.round(style), 0, FREESTYLE.length - 1)];
@@ -234,18 +254,20 @@ export function freestylePose(style: number, u: number, t: number): Beat {
   switch (freestyleOf(style).id) {
     // ------------------------------------------------------------------ 0: chest pound
     case 0: {
-      const hit = Math.max(bump(uc, 0.26, 0.16), bump(uc, 0.52, 0.16));
-      const open = Math.max(bump(uc, 0.1, 0.12), bump(uc, 0.4, 0.1), bump(uc, 0.78, 0.22));
-      const sx = lerp(-0.55, -2.0, open) + hit * 0.55;
-      const sz = lerp(0.35, 1.45, open) - hit * 1.25;
-      const ex = lerp(-1.1, -2.0, open) - hit * 0.7;
+      // THREE fast chest thumps (snappy wind-up, hard landing) and a cocky chin-up at the end
+      const hit = Math.max(bump(uc, 0.2, 0.11), bump(uc, 0.42, 0.11), bump(uc, 0.64, 0.11));
+      const open = Math.max(bump(uc, 0.08, 0.1), bump(uc, 0.31, 0.09), bump(uc, 0.53, 0.09));
+      const chin = S(uc, 0.7, 0.8) * (1 - S(uc, 0.86, 1)); // arms flung wide, chest out: "and what?"
+      const sx = lerp(lerp(-0.55, -1.9, open) + hit * 0.55, -1.25, chin);
+      const sz = lerp(lerp(0.35, 1.45, open) - hit * 1.25, 1.55, chin);
+      const ex = lerp(lerp(-1.1, -2.0, open) - hit * 0.7, -0.5, chin);
       b.a0 = P(sx, -0.5 - hit * 0.5, sz, ex);
       b.a1 = P(sx, -0.5 - hit * 0.5, sz, ex);
-      b.ln = -0.3 - open * 0.18 + hit * 0.3;
-      b.dp = 0.1 + hit * 0.16;
-      b.rl = Math.sin(uc * Math.PI * 4) * 0.05;
-      b.tw = Math.sin(uc * Math.PI * 2) * 0.12;
-      b.kk = 42;
+      b.ln = -0.3 - open * 0.18 + hit * 0.32 - chin * 0.3;
+      b.dp = 0.1 + hit * 0.16 - chin * 0.04;
+      b.rl = Math.sin(uc * Math.PI * 6) * 0.05;
+      b.tw = Math.sin(uc * Math.PI * 3) * 0.12;
+      b.kk = 48;
       break;
     }
     // ------------------------------------------------------------------ 1: champion belt raise
@@ -410,6 +432,30 @@ export function freestylePose(style: number, u: number, t: number): Beat {
       b.kk = 40;
       break;
     }
+    // ------------------------------------------------------------------ 10: fist clash (3× gloves slammed together)
+    case 10: {
+      // wind-up: both arms swing wide and high — slam: both gloves meet dead-centre in front of the sternum (the
+      // pose below puts the glove faces ~0.8 units apart, i.e. pressed together). Three times, each one faster and
+      // harder, then the chin lifts and the arms spread: "come get it".
+      const hit = Math.max(bump(uc, 0.2, 0.09), bump(uc, 0.4, 0.085), bump(uc, 0.6, 0.08));
+      const open = Math.max(bump(uc, 0.09, 0.1), bump(uc, 0.3, 0.09), bump(uc, 0.5, 0.085));
+      const on = S(uc, 0, 0.08);
+      const chin = S(uc, 0.66, 0.78) * (1 - S(uc, 0.86, 1));
+      const READY = P(-1.0, -0.42, 0.55, -1.75); // fists hovering apart in front of the chest between slams
+      const WIDE = P(-1.25, -0.3, 1.05, -1.25); // the wind-up: arms flung out
+      const MET = P(-0.85, -0.52, -0.3, -1.65); // the slam: gloves pressed together on the sternum line
+      const CHIN = P(-1.3, -0.2, 1.6, -0.45); // chest out, arms spread, chin up
+      let arm = lerpPose(lerpPose(READY, WIDE, open), MET, hit);
+      arm = lerpPose(arm, CHIN, chin);
+      b.a0 = lerpPose(GUARD, arm, on);
+      b.a1 = lerpPose(GUARD, arm, on);
+      b.ln = 0.14 + open * 0.04 + hit * 0.24 - chin * 0.32;
+      b.dp = 0.14 + hit * 0.14 - chin * 0.05;
+      b.tw = Math.sin(uc * Math.PI * 6) * 0.05;
+      b.rl = Math.sin(uc * Math.PI * 9) * 0.03 * (1 - chin);
+      b.kk = 52;
+      break;
+    }
   }
 
   if (back > 0.001) {
@@ -444,6 +490,21 @@ export function freestylePose(style: number, u: number, t: number): Beat {
  *  tall   — the final straightening into the stance
  *  bounce — the settle after standing (a small dip, so the rise LANDS instead of just stopping)
  */
+/**
+ * THE COLLAPSE (knock-down / KO), staged on the fall weight `e` (0 upright → 1 flat on the canvas). A body does not
+ * rotate stiffly about its hips onto its back: the knees give way FIRST and the hips drop, the torso is still nearly
+ * upright while that happens and only then goes over, and it lands a little on one side with one knee up — never
+ * a plank. Every term is zero at e = 0 (nothing pops at the start of the fall).
+ */
+export function fallStages(e: number) {
+  const ec = clamp(e, 0, 1.06);
+  return {
+    buckle: Math.sin(Math.PI * S(ec, 0.0, 0.62)), // the knees fold, the hips drop out from under the torso
+    lay: S(ec, 0.16, 1.0), // the torso goes over (late: the legs have already gone)
+    side: S(ec, 0.4, 1.0), // ...and settles a little onto one side, knee up
+  };
+}
+
 export function riseStages(u: number) {
   const uc = clamp(u, 0, 1);
   return {

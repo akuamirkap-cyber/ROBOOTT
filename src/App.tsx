@@ -4,6 +4,10 @@ import { loadSfxProfile, type SfxProfile } from './game/audio';
 import { Menu } from './ui/Menu';
 import { Hud, TouchControls } from './ui/Hud';
 import { MatchEnd, PauseMenu } from './ui/Overlays';
+import { applyOutcome, loadProfile, makeSeries, saveProfile, seriesAfterBout, seriesLabel, type ModeId, type Profile, type Series } from './game/progress';
+import { Matchmaking } from './ui/Matchmaking';
+import { Bracket } from './ui/Bracket';
+import { usePortrait } from './ui/Profile';
 
 const LS_KEY = 'steel-titans-unlocked';
 
@@ -86,10 +90,43 @@ export default function App() {
     };
   }, []);
 
+  // ---------------------------------------------------------------- account profile · game modes · series
+  const [profile, setProfile] = useState<Profile>(loadProfile);
+  const [mode, setMode] = useState<ModeId>('play');
+  const [series, setSeries] = useState<Series | null>(null);
+  const seriesRef = useRef<Series | null>(null);
+  seriesRef.current = series;
+  // the pre-match flow: TOURNAMENT shows the bracket first, RANK / TEAM / TOURNAMENT all go through matchmaking
+  const [stage, setStage] = useState<null | 'bracket' | 'matchmaking'>(null);
+  const portrait = usePortrait(game, hud?.helmetSkin ?? 0, hud?.gloveSkin ?? 0, hud?.armorSkin ?? 0);
+
+  /** drop the bell: the current bout of a series goes into the ring */
+  const launch = (s: Series) => {
+    const g = gameRef.current;
+    if (!g) return;
+    setStage(null);
+    const idx = s.queue[Math.min(s.step, s.queue.length - 1)];
+    if (s.mode !== 'play') setSel(idx);
+    g.startMatch(idx, s.mode === 'team' ? { enemy2: s.queue[1] ?? (idx + 1) % OPPONENTS.length } : undefined);
+  };
+
+  const startMode = (m: ModeId) => {
+    const s = makeSeries(m, OPPONENTS.length, profile.rp, sel);
+    if (!s) return;
+    setMode(m);
+    setSeries(s);
+    // every mode goes through the VS screen (PLAY MATCH: the picked challenger is locked in there)
+    if (m === 'tournament') setStage('bracket');
+    else setStage('matchmaking');
+  };
+
   const result = hud?.result;
   const oppIndex = hud?.oppIndex ?? 0;
+  const ultraNow = hud?.ultra ?? false;
   useEffect(() => {
-    if (result === 'win') {
+    if (result !== 'win' && result !== 'lose') return;
+    const win = result === 'win';
+    if (win) {
       const next = Math.min(OPPONENTS.length - 1, oppIndex + 1);
       setUnlocked((u) => {
         const v = Math.max(u, next);
@@ -97,10 +134,19 @@ export default function App() {
         return v;
       });
     }
+    const cur = seriesRef.current ?? { mode: 'play' as ModeId, queue: [oppIndex], step: 0, wins: 0, losses: 0, done: false, won: false };
+    const after = seriesAfterBout(cur, win);
+    setSeries(after);
+    setProfile((p) => {
+      const n = applyOutcome(p, { win, mode: cur.mode, ultra: ultraNow, seriesWon: after.done && after.won && (cur.mode === 'tournament' || cur.mode === 'team') });
+      saveProfile(n);
+      return n;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result, oppIndex]);
 
   const phase = hud?.phase ?? 'menu';
-  const inMatch = phase === 'intro' || phase === 'fight' || phase === 'ko';
+  const inMatch = phase === 'walk' || phase === 'intro' || phase === 'fight' || phase === 'ko';
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-black">
@@ -110,7 +156,7 @@ export default function App() {
       {hud && inMatch && <Hud h={hud} touch={touch} />}
       {inMatch && touch && phase === 'fight' && <TouchControls game={game} />}
 
-      {phase === 'menu' && (
+      {phase === 'menu' && !stage && (
         <Menu
           unlocked={unlocked}
           sel={sel}
@@ -118,7 +164,12 @@ export default function App() {
             setSel(i);
             game?.selectOpponent(i);
           }}
-          onStart={() => game?.startMatch(sel)}
+          onStart={() => startMode('play')}
+          profile={profile}
+          portrait={portrait}
+          mode={mode}
+          onMode={setMode}
+          onStartMode={startMode}
           sfx={sfxId}
           onSfx={pickSfx}
           ultra={ultra}
@@ -129,24 +180,90 @@ export default function App() {
           onCam={pickCam}
           iq={iqNow}
           onIq={pickIq}
+          muted={muted}
+          onToggleMute={() => {
+            const m = !muted;
+            setMuted(m);
+            gameRef.current?.setMuted(m);
+          }}
           game={game}
           hud={hud}
+        />
+      )}
+
+      {phase === 'menu' && stage === 'bracket' && series && (
+        <Bracket
+          series={series}
+          profile={profile}
+          ultra={ultra}
+          game={game}
+          onStart={() => setStage('matchmaking')}
+          onBack={() => {
+            setStage(null);
+            setSeries(null);
+          }}
+        />
+      )}
+      {phase === 'menu' && stage === 'matchmaking' && series && (
+        <Matchmaking
+          series={series}
+          profile={profile}
+          portrait={portrait}
+          ultra={ultra}
+          iq={iqNow}
+          game={game}
+          onReady={() => launch(series)}
+          onCancel={() => {
+            if (series.mode === 'tournament') setStage('bracket');
+            else {
+              setStage(null);
+              setSeries(null);
+            }
+          }}
         />
       )}
 
       {hud && phase === 'matchEnd' && (
         <MatchEnd
           h={hud}
+          series={series}
+          label={seriesLabel(series)}
           onNext={
-            hud.oppIndex < OPPONENTS.length - 1
+            series && !series.done && series.step < series.queue.length - 1
               ? () => {
-                  setSel(hud.oppIndex + 1);
-                  game?.startMatch(hud.oppIndex + 1);
+                  const nxt = { ...series, step: series.step + 1 };
+                  setSeries(nxt);
+                  // the tournament goes back to the bracket between rounds, then through the matchmaking lock-in
+                  game?.toMenu();
+                  setStage('bracket');
+                }
+              : (!series || series.mode === 'play') && hud.oppIndex < OPPONENTS.length - 1
+                ? () => {
+                    const idx = hud.oppIndex + 1;
+                    setSeries({ mode: 'play', queue: [idx], step: 0, wins: 0, losses: 0, done: false, won: false });
+                    setSel(idx);
+                    game?.toMenu();
+                    setStage('matchmaking');
+                  }
+                : null
+          }
+          onRetry={() => {
+            if (series && series.mode !== 'play') startMode(series.mode);
+            else {
+              setSeries({ mode: 'play', queue: [hud.oppIndex], step: 0, wins: 0, losses: 0, done: false, won: false });
+              game?.startMatch(hud.oppIndex);
+            }
+          }}
+          onBracket={
+            series && series.mode === 'tournament' && series.done
+              ? () => {
+                  game?.toMenu();
+                  setStage('bracket');
                 }
               : null
           }
-          onRetry={() => game?.startMatch(hud.oppIndex)}
           onMenu={() => {
+            setSeries(null);
             setSel(hud.oppIndex);
             game?.toMenu();
             game?.selectOpponent(hud.oppIndex);
@@ -173,35 +290,37 @@ export default function App() {
         />
       )}
 
-      {/* ---------- utility buttons (pause / sound) ---------- */}
-      <div className="absolute right-3 z-30 flex gap-2" style={inMatch ? (touch ? { top: 78 } : { bottom: 12 }) : { top: 12 }}>
-        {inMatch && (
+      {/* ---------- utility buttons (pause / sound during match) ---------- */}
+      {phase !== 'menu' && (
+        <div className="absolute right-3 z-30 flex gap-2" style={inMatch ? (touch ? { top: 78 } : { bottom: 12 }) : { top: 12 }}>
+          {inMatch && (
+            <button
+              onClick={() => pickCam((camNow + 1) % CAM_MODES.length)}
+              className="ghost cut-sm pointer-events-auto flex h-9 items-center gap-1.5 px-2.5 font-tech text-[9px] font-bold tracking-[0.16em] text-sky-200"
+              title="Ganti mode kamera ( / dan . )"
+            >
+              <span>🎥</span>
+              <span className="hidden sm:inline">{CAM_MODES[camNow]?.name ?? 'KAMERA'}</span>
+            </button>
+          )}
+          {inMatch && (
+            <button onClick={() => game?.togglePause()} className="ghost cut-sm pointer-events-auto grid h-9 w-9 place-items-center" title="Pause (Esc)">
+              <IconPause />
+            </button>
+          )}
           <button
-            onClick={() => pickCam((camNow + 1) % CAM_MODES.length)}
-            className="ghost cut-sm pointer-events-auto flex h-9 items-center gap-1.5 px-2.5 font-tech text-[9px] font-bold tracking-[0.16em] text-sky-200"
-            title="Ganti mode kamera ( / dan . )"
+            onClick={() => {
+              const m = !muted;
+              setMuted(m);
+              gameRef.current?.setMuted(m);
+            }}
+            className="ghost cut-sm pointer-events-auto grid h-9 w-11 place-items-center"
+            title={muted ? 'Suara mati' : 'Suara menyala'}
           >
-            <span>🎥</span>
-            <span className="hidden sm:inline">{CAM_MODES[camNow]?.name ?? 'KAMERA'}</span>
+            <IconSound off={muted} />
           </button>
-        )}
-        {inMatch && (
-          <button onClick={() => game?.togglePause()} className="ghost cut-sm pointer-events-auto grid h-9 w-9 place-items-center" title="Pause (Esc)">
-            <IconPause />
-          </button>
-        )}
-        <button
-          onClick={() => {
-            const m = !muted;
-            setMuted(m);
-            gameRef.current?.setMuted(m);
-          }}
-          className="ghost cut-sm pointer-events-auto grid h-9 w-11 place-items-center"
-          title={muted ? 'Suara mati' : 'Suara menyala'}
-        >
-          <IconSound off={muted} />
-        </button>
-      </div>
+        </div>
+      )}
     </div>
   );
 }

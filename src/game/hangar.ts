@@ -222,21 +222,21 @@ export function buildHangar(scene: THREE.Scene): Hangar {
   }
 
   // ---- the red flood on the left: an emissive strip-light bank + the light itself
-  const redBank = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff1f36).multiplyScalar(1.4) });
+  const redBank = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff1f36).multiplyScalar(1.02) });
   for (let i = 0; i < 4; i++) put(new THREE.BoxGeometry(0.25, 7.5, 0.9), redBank, -29.7, 6 + i * 0.0, -6 + i * 3.4);
   put(new THREE.BoxGeometry(0.3, 0.5, 18), redBank, -29.7, 15.5, -1);
-  const red = new THREE.PointLight(0xff2232, 520, 60, 2);
+  const red = new THREE.PointLight(0xff2232, 400, 60, 2);
   red.position.set(-12, 8, -2);
   g.add(red);
 
   // ---- key light for the hero: cool white from the front-right
-  const key = new THREE.SpotLight(0xdfe9ff, 900, 60, 0.62, 0.65, 2);
+  const key = new THREE.SpotLight(0xdfe9ff, 700, 60, 0.62, 0.65, 2);
   key.position.set(8, 14, 11);
   key.target.position.set(0, 5, 0);
   g.add(key, key.target);
 
   // ---- overhead diagonal light bars (the white streaks top-right of the reference)
-  const barMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xf4f8ff).multiplyScalar(1.5) });
+  const barMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xf4f8ff).multiplyScalar(1.12) });
   const barGlow = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.14, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
   for (let i = 0; i < 3; i++) {
     const x = 9 + i * 4.2;
@@ -341,12 +341,12 @@ export function buildHangar(scene: THREE.Scene): Hangar {
   const update = (t: number) => {
     // the flood breathes, the haze drifts
     const b = 0.86 + Math.sin(t * 1.3) * 0.08 + Math.sin(t * 4.7) * 0.03;
-    red.intensity = (ultraMood ? 680 : 520) * b;
-    (hazeRed.material as THREE.MeshBasicMaterial).opacity = 0.8 + Math.sin(t * 0.7) * 0.12;
+    red.intensity = (ultraMood ? 520 : 400) * b;
+    (hazeRed.material as THREE.MeshBasicMaterial).opacity = 0.6 + Math.sin(t * 0.7) * 0.1;
     hazeRed.position.x = -9 + Math.sin(t * 0.21) * 1.5;
     hazeCool.position.x = 12 + Math.cos(t * 0.17) * 1.2;
-    (fogSheet.material as THREE.MeshBasicMaterial).opacity = 0.7 + Math.sin(t * 0.45) * 0.2;
-    key.intensity = 900 + Math.sin(t * 7.3) * 12;
+    (fogSheet.material as THREE.MeshBasicMaterial).opacity = 0.5 + Math.sin(t * 0.45) * 0.15;
+    key.intensity = 700 + Math.sin(t * 7.3) * 10;
   };
   const setVsBackdrop = (on: boolean) => {
     vsWall.visible = on;

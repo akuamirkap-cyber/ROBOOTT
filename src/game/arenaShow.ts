@@ -44,12 +44,12 @@ export function buildShow(scene: THREE.Scene, entryAngles: number[]): Show {
   rTex.wrapS = THREE.RepeatWrapping;
   rTex.repeat.set(-5, 1);
   rTex.anisotropy = 8;
-  const ribbon = new THREE.Mesh(new THREE.CylinderGeometry(62.2, 62.2, 5.2, 96, 1, true), new THREE.MeshBasicMaterial({ map: rTex, side: THREE.BackSide, color: new THREE.Color(1.05, 1.05, 1.05) }));
+  const ribbon = new THREE.Mesh(new THREE.CylinderGeometry(62.2, 62.2, 5.2, 96, 1, true), new THREE.MeshBasicMaterial({ map: rTex, side: THREE.BackSide, color: new THREE.Color(0.95, 0.95, 0.95) }));
   ribbon.position.y = 36.2;
   markReflect(ribbon, true);
   scene.add(ribbon);
   for (const y of [33.4, 39.0]) {
-    const edge = new THREE.Mesh(new THREE.TorusGeometry(62.1, 0.12, 6, 128), new THREE.MeshBasicMaterial({ color: new THREE.Color(0x8fd8ff).multiplyScalar(0.85) }));
+    const edge = new THREE.Mesh(new THREE.TorusGeometry(62.1, 0.12, 6, 128), new THREE.MeshBasicMaterial({ color: new THREE.Color(0x8fd8ff).multiplyScalar(0.68) }));
     edge.rotation.x = Math.PI / 2;
     edge.position.y = y;
     scene.add(edge);
@@ -123,9 +123,9 @@ export function buildShow(scene: THREE.Scene, entryAngles: number[]): Show {
     fTex.needsUpdate = true;
   };
   drawFaces();
-  const scrMat = new THREE.MeshBasicMaterial({ map: fTex, color: new THREE.Color(1.05, 1.05, 1.05) });
+  const scrMat = new THREE.MeshBasicMaterial({ map: fTex, color: new THREE.Color(1.02, 1.02, 1.02) });
   const frameMat = new THREE.MeshStandardMaterial({ color: 0x0b0d14, metalness: 0.8, roughness: 0.5 });
-  const edgeMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0x8fd8ff).multiplyScalar(1.45) });
+  const edgeMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0x8fd8ff).multiplyScalar(1.15) });
   const SCR_R = 59.4;
   const SCR_Y = 22.4;
   const SCR_W = 40;

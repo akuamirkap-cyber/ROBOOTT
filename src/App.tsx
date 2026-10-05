@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CAM_MODES, Game, GFX_MODES, OPPONENTS, loadCamMode, loadDifficulty, loadFootwork, loadGfxMode, loadIq, type GfxMode, type HudState } from './game/Game';
+import { CAM_MODES, Game, GFX_MODES, OPPONENTS, loadBrightness, loadCamMode, loadDifficulty, loadFootwork, loadGfxMode, loadIq, type GfxMode, type HudState } from './game/Game';
 import { loadSfxProfile, type SfxProfile } from './game/audio';
 import { Menu } from './ui/Menu';
 import { Hud, TouchControls } from './ui/Hud';
@@ -66,6 +66,13 @@ export default function App() {
   const pickGfx = (m: GfxMode) => {
     setGfxLocal(m);
     gameRef.current?.setGfxMode(m);
+  };
+
+  const [brightLocal, setBrightLocal] = useState<number>(loadBrightness);
+  const brightNow = hud?.bright ?? brightLocal; // the game is the source of truth
+  const pickBright = (b: number) => {
+    setBrightLocal(b);
+    gameRef.current?.setBrightness(b);
   };
 
   const [ultra, setUltraState] = useState<boolean>(() => loadDifficulty() === 'ultra');
@@ -312,6 +319,8 @@ export default function App() {
           onGfx={pickGfx}
           fps={hud.fps}
           tier={hud.gfx}
+          bright={brightNow}
+          onBright={pickBright}
           onResume={() => game?.togglePause()}
           onMenu={() => {
             game?.togglePause();

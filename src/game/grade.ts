@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { Pass, FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 
 /**
@@ -20,13 +21,15 @@ export const GradeShader = {
     tDiffuse: { value: null as THREE.Texture | null },
     time: { value: 0 },
     res: { value: new THREE.Vector2(1920, 1080) },
-    vignette: { value: 0.5 },
-    sat: { value: 1.3 },
-    grain: { value: 0.013 },
-    contrast: { value: 0.36 },
-    exposure: { value: 1.06 },
+    vignette: { value: 0.46 },
+    sat: { value: 1.26 },
+    grain: { value: 0.012 },
+    contrast: { value: 0.06 },
+    exposure: { value: 1.13 }, // written every frame by the game's auto-exposure (1.13 × the iris gain)
+    guard: { value: 1.0 }, // hard anti-blowout limiter, engaged by the auto-exposure when the frame runs hot
+    lift: { value: 0.028 }, // the shadow floor: the neutral tone map's toe is deep, this keeps it off the floor
     tones: { value: 1.0 },
-    ca: { value: 0.0022 },
+    ca: { value: 0.002 },
     aa: { value: 1.0 },
     warmth: { value: 0.5 },
   },
@@ -45,6 +48,8 @@ export const GradeShader = {
     uniform float grain;
     uniform float contrast;
     uniform float exposure;
+    uniform float guard;
+    uniform float lift;
     uniform float tones;
     uniform float ca;
     uniform float aa;
@@ -111,6 +116,13 @@ export const GradeShader = {
       float lc = mix( ln, sc, contrast ) + max( l - 1.0, 0.0 );
       col *= lc / max( l, 1e-4 );
 
+      // ---------- 3b · THE SHADOW FLOOR ----------
+      // A pure multiplicative grade would let the unlit half of the hall, the black chassis and the gap under the
+      // apron fall to true black. A small ADDITIVE lift that fades out by 0.38 gives the deepest values a floor to
+      // stand on: the shadows stay readable and never turn to crushed mud, and the mid tones and up never see it.
+      l = dot( col, LUMA );
+      col += lift * ( 1.0 - smoothstep( 0.0, 0.38, l ) );
+
       // ---------- 4 · vibrance + saturation ----------
       l = dot( col, LUMA );
       vec3 d = col - vec3( l );
@@ -129,8 +141,14 @@ export const GradeShader = {
       col = mix( col, col * vec3( 1.06, 1.015, 0.95 ), smoothstep( 0.5, 1.7, l ) * 0.55 * tones );
       col *= vec3( 1.0 + 0.03 * warmth, 1.0 + 0.008 * warmth, 1.0 - 0.028 * warmth );
 
+      // ---------- 6b · THE ANTI-BLOWOUT LIMITER ----------
+      // The grade works in linear HDR and the tone map below would happily render a value of 4 as white. The guard value
+      // (driven by the auto-exposure, 1.0 = off) takes the top of the range away as soon as the frame as a whole
+      // runs hot, so a strobing rig, a bloom surge or a flash can never wash the arena out to flat white.
+      col = min( col, vec3( mix( 64.0, 1.0, guard ) ) );
+
       // ---------- 7 · a touch of cinematic roll-off in the mids (the "film" curve) ----------
-      col = pow( col, vec3( 1.0 / 1.035 ) );
+      col = pow( col, vec3( 1.0 / 1.03 ) );
 
       // ---------- 8 · soft lens vignette ----------
       float v = 1.0 - smoothstep( 0.3, 1.06, length( q ) * 1.32 );
@@ -146,4 +164,67 @@ export const GradeShader = {
 
 export function makeGradePass() {
   return new ShaderPass(GradeShader);
+}
+
+
+/**
+ * THE LIGHT METER — the game's auto-exposure needs one number: how bright is the frame, really. This pass averages
+ * the whole graded frame down to a SINGLE pixel with a 16×16 grid of taps (256 samples, one texture fetch each,
+ * once per frame — nothing) and leaves it in its own 1×1 RGBA8 target, which the CPU can read back safely and
+ * cheaply every dozen frames. The sample is gamma-encoded on the way in, so the number that comes back is
+ * display-referred: 0.26 means "a normally exposed picture", 0.5 means "this frame is running hot".
+ *
+ * It sits between the grade and the output pass, and it never swaps the composer's buffers, so the chain is
+ * untouched and the frame it measures is exactly the frame the tone mapper is about to show.
+ */
+const METER_SHADER = {
+  uniforms: { tDiffuse: { value: null as THREE.Texture | null } },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+    }`,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    varying vec2 vUv;
+    void main() {
+      const float G = 16.0;
+      vec3 sum = vec3( 0.0 );
+      for ( int y = 0; y < 16; y ++ ) {
+        for ( int x = 0; x < 16; x ++ ) {
+          vec2 u = ( vec2( float( x ), float( y ) ) + 0.5 ) / G;
+          vec3 c = clamp( texture2D( tDiffuse, u ).rgb, 0.0, 1.0 );
+          sum += pow( c, vec3( 1.0 / 2.2 ) ); // a display-referred average, not a linear one
+        }
+      }
+      gl_FragColor = vec4( sum / 256.0, 1.0 );
+    }`,
+};
+
+export class MeterPass extends Pass {
+  readonly rt: THREE.WebGLRenderTarget;
+  private material: THREE.ShaderMaterial;
+  private quad: FullScreenQuad;
+
+  constructor() {
+    super();
+    this.needsSwap = false; // it measures the chain, it does not take part in it
+    this.rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, depthBuffer: false, stencilBuffer: false });
+    this.material = new THREE.ShaderMaterial({
+      uniforms: THREE.UniformsUtils.clone(METER_SHADER.uniforms),
+      vertexShader: METER_SHADER.vertexShader,
+      fragmentShader: METER_SHADER.fragmentShader,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.quad = new FullScreenQuad(this.material);
+  }
+
+  render(renderer: THREE.WebGLRenderer, _writeBuffer: THREE.WebGLRenderTarget, readBuffer: THREE.WebGLRenderTarget) {
+    this.material.uniforms.tDiffuse.value = readBuffer.texture;
+    renderer.setRenderTarget(this.rt);
+    this.quad.render(renderer);
+    renderer.setRenderTarget(null);
+  }
 }

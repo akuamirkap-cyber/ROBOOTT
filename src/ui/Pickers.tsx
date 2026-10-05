@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { CAM_MODES, FOOTWORK_STEPS, GFX_MODES, IQ_STEPS, QUALITY_TIERS, ULTRA_COLOR, type GfxMode } from '../game/Game';
+import { BRIGHTNESS_STEPS, CAM_MODES, FOOTWORK_STEPS, GFX_MODES, IQ_STEPS, QUALITY_TIERS, ULTRA_COLOR, type GfxMode } from '../game/Game';
 import { SFX_PROFILES, type SfxProfile } from '../game/audio';
 import { cssVar } from './Emblem';
 
@@ -234,6 +234,51 @@ export function GfxPicker({ value, onPick, fps, tier }: { value: GfxMode; onPick
       <div className="mt-1.5 flex items-center gap-1.5 rounded border border-white/5 bg-white/[0.03] px-2 py-1 font-tech text-[8.5px] tracking-wide text-white/65">
         <span style={{ color: GFX_COLOR }}>✦</span>
         <span className="truncate">{GFX_DESC[value]}</span>
+      </div>
+    </div>
+  );
+}
+
+const BRIGHT_LABEL: Record<number, string> = { 0.85: 'GELAP', 0.95: 'LEMBUT', 1: 'NORMAL', 1.12: 'TERANG', 1.25: 'SILAU' };
+
+/**
+ * THE EXPOSURE. Everything else in this file trades detail for speed; this one is taste, so it stays in the
+ * player's hands. The game's auto-exposure watches the frame underneath it, so pushing this up cannot blow the
+ * picture out — it just moves the whole show up or down the curve.
+ */
+export function BrightnessPicker({ value, onPick }: { value: number; onPick: (b: number) => void }) {
+  return (
+    <div className="mt-3">
+      <SectionTitle
+        right={
+          <span className="font-tech text-[9px] tracking-[0.2em]" style={{ color: GFX_COLOR }}>
+            {Math.round(value * 100)}%
+          </span>
+        }
+      >
+        KECERAHAN GAMBAR
+      </SectionTitle>
+      <div className="grid grid-cols-5 gap-1.5">
+        {BRIGHTNESS_STEPS.map((b) => {
+          const on = b === value;
+          return (
+            <button
+              key={b}
+              onClick={() => onPick(b)}
+              className={`tile cut-sm pointer-events-auto relative px-1 py-1.5 text-center ${on ? 'tile-on' : ''}`}
+              style={cssVar('--c', GFX_COLOR)}
+            >
+              <div className="font-display text-[16px] leading-none" style={{ color: on ? GFX_COLOR : '#ffffff' }}>
+                {b === 1 ? '1.0' : b.toFixed(2).slice(1)}
+              </div>
+              <div className="mt-0.5 font-tech text-[7px] font-bold tracking-[0.1em] text-white/65">{BRIGHT_LABEL[b] ?? ''}</div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 text-[10px] leading-tight text-white/45">
+        Menyetel exposure seluruh gambar (arena dan lobby) tanpa mengubah pencahayaan panggung — lampu, bloom dan
+        warna tetap sama, hanya terangnya yang bergeser.
       </div>
     </div>
   );

@@ -3,7 +3,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { makeGradePass } from './grade';
+import { MeterPass, makeGradePass } from './grade';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { Robot, type Pose, type RobotStyle } from './robot';
 import { ARMOR_SKINS, GLOVE_SKINS, HELMET_SKINS } from './build';
@@ -296,6 +296,8 @@ export interface HudState {
   gfx?: string;
   /** the graphics mode the player pinned ('auto' = the 60 fps governor) */
   gfxMode?: GfxMode;
+  /** the manual exposure step (0.85 … 1.25) */
+  bright?: number;
   stats?: MatchStats; // the fight sheet shown on the result screen
   /** TEAM MATCH (2v2): the second robot on each side */
   team?: {
@@ -990,6 +992,17 @@ export const GFX_MODES: { id: GfxMode; name: string; hint: string }[] = [
   { id: 'performance', name: 'KINERJA', hint: 'paling lancar' },
 ];
 const LS_GFX = 'steel-titans-graphics-v1';
+const LS_BRIGHT = 'steel-titans-brightness-v1';
+/** the manual exposure steps. 1.0 is the tuned picture; the two either side are for a bright room and a dark one. */
+export const BRIGHTNESS_STEPS = [0.85, 0.95, 1.0, 1.12, 1.25] as const;
+export const loadBrightness = (): number => {
+  try {
+    const v = Number(localStorage.getItem(LS_BRIGHT));
+    return (BRIGHTNESS_STEPS as readonly number[]).includes(v) ? v : 1.0;
+  } catch {
+    return 1.0;
+  }
+};
 /** the pinned graphics mode from last time ('auto' = let the governor hold 60 by itself) */
 export const loadGfxMode = (): GfxMode => {
   try {
@@ -1077,6 +1090,18 @@ export class Game {
   private qSteady = 0;
   private qCooldown = 0;
   private qWarm = 2.2; // seconds of grace at boot: shader compilation and the first uploads are not the GPU's fault
+  // THE AUTO-EXPOSURE: the frame's own brightness drives the grade's exposure, the way a broadcast camera rides its
+  // iris. It is deliberately slow (about a second to settle) and its range is small — it cannot rescue a scene that
+  // was badly lit, it only keeps a hard-strobing rig, a flash or a bloom surge from blowing the picture out.
+  private meter: MeterPass;
+  private aeDead = false; // the readback failed on this driver: stop asking for it
+  private aeFrames = 0; // frames since the last readback (the GPU is at least a frame behind)
+  private aeBuf = new Uint8Array(4);
+  private aeKey = 0.28; // display-referred: 0.26 ≈ a normally exposed frame, 0.5 = running hot
+  private aeGain = 1;
+  private aeHold = 0; // paused while a cinematic flash / white-out is on screen (a strobe is not an exposure)
+  private aePause = 0;
+  private bright = 1.0; // the manual exposure step from the graphics panel (the auto-exposure never fights it)
   private enemyCache = new Map<number, Fighter>();
   private flashAmt = 0;
   private hype = 0;
@@ -1167,6 +1192,7 @@ export class Game {
     this.onHud = onHud;
     this.qMode = loadGfxMode();
     this.qAuto = this.qMode === 'auto';
+    this.bright = loadBrightness();
 
     // anti-aliasing: a light 2× MSAA on the composer's HDR target for the long geometry edges, plus the compact
     // FXAA inside the grade pass for everything the samples miss. The HDR target is where the frame goes through
@@ -1180,13 +1206,13 @@ export class Game {
     // out into pastels as they brighten) while still rolling the highlights off softly — the reason the arena can
     // now be pushed much brighter without the picture turning milky.
     this.renderer.toneMapping = THREE.NeutralToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMappingExposure = 1.0;
     container.appendChild(this.renderer.domElement);
     this.renderer.domElement.style.display = 'block';
 
     const pm = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
-    this.scene.environmentIntensity = 0.46; // metal lives on its reflections: a little more environment = rich, bright steel
+    this.scene.environmentIntensity = 0.38; // metal lives on its reflections — a touch above the old 0.34 without lifting the whole picture
 
     this.arena = buildArena(this.scene);
     this.hangar = buildHangar(this.scene);
@@ -1201,10 +1227,11 @@ export class Game {
     const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: this.tierCfg().samples, depthBuffer: true, stencilBuffer: false });
     this.composer = new EffectComposer(this.renderer, rt);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    // CINEMATIC BLOOM: every lamp, LED strip and screen now bleeds a soft glow into the dark of the hall. The pass
-    // runs in the HDR buffer before the tone map, so only the things that are genuinely bright (the lenses, the
-    // neon, a hot spark) bloom — and the mip chain is run at a fraction of the frame, so it costs almost nothing.
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.62, 0.7, 0.9);
+    // CINEMATIC BLOOM — HIGHLIGHT-ONLY. The threshold sits well above diffuse white in the linear HDR buffer, so
+    // the canvas, the steel and the crowd stay exactly as lit as they were and only the things that are genuinely
+    // over-bright (a lamp lens, an LED strip, a jumbotron, a hot spark) bleed a soft glow into the dark of the
+    // hall. That is the whole trick: the arena is not brighter, the LIGHTS are.
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.4, 0.6, 1.16);
     this.bloom.enabled = this.tierCfg().bloom;
     const baseBloomSize = UnrealBloomPass.prototype.setSize;
     const bloom = this.bloom;
@@ -1217,6 +1244,10 @@ export class Game {
     this.composer.addPass(this.bloom);
     this.grade = makeGradePass();
     this.composer.addPass(this.grade);
+    // THE LIGHT METER: one pixel of the graded frame, for the auto-exposure. It sits between the grade and the
+    // tone map and never touches the chain (see MeterPass).
+    this.meter = new MeterPass();
+    this.composer.addPass(this.meter);
     this.composer.addPass(new OutputPass());
 
     // Foreground menu hero robot (standing front view on illuminated platform)
@@ -2028,6 +2059,7 @@ export class Game {
 
   toMenu() {
     this.endTeam();
+    this.resetExposure();
     this.phase = 'menu';
     this.phaseT = 0;
     this.result = null;
@@ -2148,6 +2180,14 @@ export class Game {
   setHeroMouse(nx: number, ny: number) {
     this.heroMouseX = nx;
     this.heroMouseY = ny;
+  }
+
+  /** forget everything the iris learned — the next shot starts at the neutral exposure */
+  private resetExposure() {
+    this.aeKey = 0.28;
+    this.aeGain = 1;
+    this.aePause = 0;
+    this.aeHold = 0;
   }
 
   private placeMenu() {
@@ -2695,6 +2735,7 @@ export class Game {
   }
 
   private beginFight() {
+    this.resetExposure(); // the walk-in lights are not the ring lights: start the ring shot neutral
     this.phase = 'fight';
     this.phaseT = 0;
     for (const f of this.fighters()) {
@@ -2944,6 +2985,20 @@ export class Game {
     return gpu ? 1 : cores > 6 ? 1 : 2;
   }
 
+  /** the manual exposure step (0.85 … 1.25), remembered between visits */
+  setBrightness(b: number) {
+    const v = (BRIGHTNESS_STEPS as readonly number[]).includes(b) ? b : 1.0;
+    if (v === this.bright) return;
+    this.bright = v;
+    try {
+      localStorage.setItem(LS_BRIGHT, String(v));
+    } catch {
+      /* ignore */
+    }
+    this.resetExposure();
+    this.emitHud(true);
+  }
+
   /** the graphics mode the player pinned (auto = the governor), remembered between visits */
   setGfxMode(m: GfxMode) {
     this.qMode = m;
@@ -2956,6 +3011,39 @@ export class Game {
     if (!this.qAuto) this.applyTier(gfxTier(m));
     else this.applyTier(this.bootTier());
     this.emitHud(true);
+  }
+
+  /**
+   * THE IRIS. Downsample the composed HDR frame to a single averaged pixel (three halvings) and read it back every
+   * twelfth frame. `renderer.readRenderTargetPixels` is synchronous, so twelve frames of texture memory (plus the
+   * GPU's own pipeline depth) is the safe margin — and it is one pixel, so the transfer is nothing.
+   */
+  private sampleScene() {
+    if (this.aeDead) return;
+    try {
+      this.renderer.readRenderTargetPixels(this.meter.rt, 0, 0, 1, 1, this.aeBuf);
+      const lum = (0.2126 * this.aeBuf[0] + 0.7152 * this.aeBuf[1] + 0.0722 * this.aeBuf[2]) / 255;
+      this.aeKey += (THREE.MathUtils.clamp(lum, 0.001, 1.2) - this.aeKey) * 0.4;
+    } catch {
+      this.aeDead = true; // no readback on this driver — the picture simply keeps its fixed exposure
+    }
+  }
+
+  /** the exposure the grade pass is told to use: the fixed base, times the gentle auto-exposure correction */
+  private updateAutoExposure(dt: number) {
+    this.aeHold = Math.max(0, this.aeHold - dt);
+    if (this.aeHold > 0) {
+      // a cinematic flash or a white-out IS the point of the shot: do not let the iris fight it
+      this.aePause = Math.min(1.4, this.aePause + dt * 3);
+      return;
+    }
+    this.aePause = Math.max(0, this.aePause - dt * 0.9);
+    if (this.aePause > 0) return;
+    // Asymmetric ON PURPOSE: a hot frame gets pulled down, a dark one is left exactly as it was lit. An
+    // auto-exposure that also brightens is how a night scene ends up looking like day.
+    const key = this.aeKey / Math.max(0.001, this.bright); // normalised: the slider is not a lighting change
+    const want = THREE.MathUtils.clamp(0.26 / Math.max(0.02, key), 0.82, 1.0);
+    this.aeGain += (want - this.aeGain) * (1 - Math.exp(-1.6 * dt));
   }
 
   private step(raw: number) {
@@ -3013,6 +3101,17 @@ export class Game {
     }
     this.grade.uniforms.time.value = this.time;
     this.composer.render();
+    // the iris runs on world time so it never counts a paused frame, and the flash hold keeps a strobe a strobe
+    this.aeHold = Math.max(this.aeHold, this.flashAmt * 0.5 + (this.phase === 'intro' || this.phase === 'matchEnd' ? 0.3 : 0));
+    this.updateAutoExposure(Math.min(0.05, raw));
+    this.aeFrames++;
+    if (this.aeFrames >= 12) {
+      this.aeFrames = 0;
+      this.sampleScene();
+    }
+    this.grade.uniforms.exposure.value = 1.13 * this.aeGain * this.bright;
+    // ...and the top-end limiter rides along with it: the hotter the frame, the harder the ceiling
+    this.grade.uniforms.guard.value = THREE.MathUtils.clamp((this.aeKey / Math.max(0.001, this.bright) - 0.34) / 0.3, 0, 1);
     this.emitHud(false);
   }
 
@@ -7196,9 +7295,9 @@ export class Game {
       cam.lookAt(this.camLook);
     }
     cam.updateProjectionMatrix();
-    // THE GLOW: the rig breathes a real bloom now, and every heavy blow and every flash pushes it — the lamps
-    // surge with the crowd instead of sitting at a constant, flat brightness
-    this.bloom.strength = 0.58 + this.trauma * 0.3 + this.flashAmt * 0.4;
+    // THE GLOW: the rig breathes a real bloom, and every heavy blow and every flash pushes it — but only a
+    // little, and never past the point where the dark of the hall starts turning grey
+    this.bloom.strength = Math.min(0.72, 0.4 + this.trauma * 0.14 + this.flashAmt * 0.18);
   }
 
   // ------------------------------------------------------------ popups + hud
@@ -7264,6 +7363,7 @@ export class Game {
       fps: this.fps,
       gfx: this.tierCfg().name,
       gfxMode: this.qMode,
+      bright: this.bright,
       team:
         this.teamMode && this.ally && this.enemy2 && this.def2
           ? {

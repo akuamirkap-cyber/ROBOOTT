@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { OPPONENTS, PLAYER_NAME, ULTRA_COLOR, type GfxMode, type HudState } from '../game/Game';
 import type { SfxProfile } from '../game/audio';
 import { Emblem, Key } from './Emblem';
-import { CamPicker, FootworkPicker, GfxPicker, IqPicker, SfxPicker, TierLadder } from './Pickers';
+import { BrightnessPicker, CamPicker, FootworkPicker, GfxPicker, IqPicker, SfxPicker, TierLadder } from './Pickers';
 import { TOURNEY_STAGES, modeOf, type Series } from '../game/progress';
 
 export function PauseMenu({
@@ -20,6 +20,8 @@ export function PauseMenu({
   onGfx,
   fps,
   tier,
+  bright,
+  onBright,
 }: {
   onResume: () => void;
   onMenu: () => void;
@@ -35,6 +37,8 @@ export function PauseMenu({
   onGfx: (m: GfxMode) => void;
   fps?: number;
   tier?: string;
+  bright: number;
+  onBright: (b: number) => void;
 }) {
   return (
     <div className="absolute inset-0 z-20 flex items-center justify-center overflow-y-auto bg-black/70 p-4 backdrop-blur-sm">
@@ -57,6 +61,7 @@ export function PauseMenu({
         <div className="mt-4">
           <GfxPicker value={gfx} onPick={onGfx} fps={fps} tier={tier} />
           <TierLadder tier={tier} />
+          <BrightnessPicker value={bright} onPick={onBright} />
         </div>
         <div className="mt-5 grid grid-cols-2 gap-3">
           <button onClick={onResume} className="play-btn cut group relative overflow-hidden px-4 py-3 font-display text-2xl tracking-[0.15em]">

@@ -332,8 +332,9 @@ export interface HudState {
   } | null;
 }
 
-type MoveId = 'jab' | 'cross' | 'hook' | 'upper' | 'slam' | 'bolt' | 'windmill' | 'grab' | 'counter';
-const isOD = (id: MoveId) => id === 'slam' || id === 'bolt' || id === 'windmill'; // overdrive moves
+type MoveId = 'jab' | 'cross' | 'hook' | 'upper' | 'slam' | 'bolt' | 'windmill' | 'skyhook' | 'grab' | 'counter';
+// overdrive moves — the four R variants: the straight (bolt), the spinning smash (windmill), the slam and the launcher
+const isOD = (id: MoveId) => id === 'slam' || id === 'bolt' || id === 'windmill' || id === 'skyhook';
 type Ease = 'in' | 'out' | 'io';
 interface Key {
   t: number;
@@ -490,6 +491,26 @@ const MOVES: Record<MoveId, Move> = {
       k(1.48, GUARD),
     ],
   },
+  // OVERDRIVE UPPERCUT (skyhook): the launcher of the set. Everything about it is VERTICAL — he sinks under the
+  // target (hips down, both fists dropped, shoulder loaded below the jaw), then the whole stack unfolds UP through
+  // it in order (hips → knee → torso → shoulder → fist), so the punch arrives from underneath the guard where no
+  // amount of blocking helps. Same family as the other Overdrives (unblockable, meter-priced, cinematic beat) but a
+  // completely different read on screen: it does not cross the ring, it comes up off the canvas.
+  skyhook: {
+    id: 'skyhook', arm: 1, dur: 1.36, strikeAt: 0.44, impact: 0.56, cancel: 99, dmg: 33, reach: 4.2, cost: 0, stun: 1.3, knock: 11, blockMul: 0.5, power: 1, hitY: 5.5, step: 2.8, kind: 'up',
+    keys: [
+      k(0, GUARD),
+      // the sink: he drops under the target's guard, both fists coming down with the hips (deep dip, shoulders over the knees)
+      k(0.26, P(-0.06, 0.5, 0.34, -0.55), -0.85, 0.52, -0.3, 0.98, 'out'),
+      // ...plateau: loaded, still, at the bottom — this is the whole tell, and it needs the beat to read
+      k(0.42, P(-0.03, 0.58, 0.3, -0.5), -1.0, 0.58, -0.36, 1.02, 'io'),
+      // THE LAUNCH: hip, knee, torso, shoulder, fist — one whip UP through the jaw (the fist is at the jaw, body vertical)
+      k(0.56, P(-2.6, -0.45, 0.06, -0.8), 0.92, -0.46, 0.5, -0.14, 'in'),
+      k(0.68, P(-2.78, -0.42, 0.0, -0.62), 1.08, -0.54, 0.6, -0.2), // the overshoot: the punch keeps rising past the target
+      k(0.86, P(-1.72, -0.44, 0.14, -1.3), 0.52, -0.12, 0.38, 0.14), // recoil, the guard already closing
+      k(1.36, GUARD),
+    ],
+  },
   grab: {
     id: 'grab', arm: 2, dur: 1.25, strikeAt: 0.1, impact: 0.3, cancel: 99, dmg: 20, reach: 3.5, cost: 14, stun: 1, knock: 8, blockMul: 1, power: 0.85, hitY: 3.6, step: 1.4, kind: 'front',
     keys: [
@@ -538,6 +559,7 @@ const MOVE_EXTRA: Record<MoveId, { width: number; launch: boolean; unblock: bool
   slam: { width: 5.0, launch: true, unblock: false },
   bolt: { width: 1.55, launch: true, unblock: false },
   windmill: { width: 2.2, launch: true, unblock: true },
+  skyhook: { width: 2.4, launch: true, unblock: true },
   grab: { width: 2.4, launch: true, unblock: true },
   counter: { width: 1.7, launch: false, unblock: false },
 };
@@ -560,11 +582,11 @@ const poiseCost = (power: number) => 8 + power * 22; // jab ≈ 15, cross ≈ 20
  * the start of the warning and the moment the strike lands (≈ 0.6–1.0 s in total) and the attack cannot hit you.
  * Unblockable / heavy moves (grab, Overdrive) get the longest warning.
  */
-const TELL: Record<MoveId, number> = { jab: 0.48, cross: 0.55, hook: 0.6, upper: 0.62, grab: 0.68, slam: 0.9, bolt: 0.9, windmill: 0.92, counter: 0.5 };
+const TELL: Record<MoveId, number> = { jab: 0.48, cross: 0.55, hook: 0.6, upper: 0.62, grab: 0.68, slam: 0.9, bolt: 0.9, windmill: 0.92, skyhook: 0.92, counter: 0.5 };
 const TELL_CHAIN = 0.2; // follow-up hits in a combo or counter flow fast while staying readable to the human eye
-const UNBLOCKABLE: MoveId[] = ['grab', 'slam', 'bolt', 'windmill']; // shown with a RED indicator, like God of War's unblockable attacks
+const UNBLOCKABLE: MoveId[] = ['grab', 'slam', 'bolt', 'windmill', 'skyhook']; // shown with a RED indicator, like God of War's unblockable attacks
 // how much a strike re-aims at the opponent's *current* position when it launches (1 = homing)
-const TRACK: Record<MoveId, number> = { jab: 0.35, cross: 0.42, hook: 0.9, upper: 0.55, slam: 0.5, bolt: 0.25, windmill: 0.42, grab: 0.52, counter: 0.45 };
+const TRACK: Record<MoveId, number> = { jab: 0.35, cross: 0.42, hook: 0.9, upper: 0.55, slam: 0.5, bolt: 0.25, windmill: 0.42, skyhook: 0.4, grab: 0.52, counter: 0.45 };
 
 /**
  * HOW THE AI MEETS A MOVE. Blocking is the right answer to most punches, but anything that comes down a STRAIGHT
@@ -577,6 +599,7 @@ export const defenceAgainst = (id: MoveId, dodge: number): 'block' | 'side' | 'b
   if (id === 'slam') return Math.random() < 0.7 ? 'back' : 'side';
   if (id === 'bolt') return Math.random() < 0.65 ? 'side' : 'back'; // a straight: sidestepping it is the answer
   if (id === 'windmill') return Math.random() < 0.65 ? 'side' : 'back';
+  if (id === 'skyhook') return Math.random() < 0.6 ? 'back' : 'side'; // the launcher comes UP: give ground or clear the line
   if (id === 'counter') return Math.random() < 0.7 ? 'side' : 'back'; // the counter straight is the same punch
   if (id === 'hook') return Math.random() < dodge ? 'back' : 'block'; // wide sweep: a sidestep cannot clear it
   if (id === 'upper') return Math.random() < dodge * 0.8 ? 'back' : 'block';
@@ -1821,7 +1844,22 @@ export class Game {
     if (st.cool > 0 || f.blocking || oDown) return;
     if (dist <= 4.0 && f.stam > 18) {
       const r = Math.random();
-      const id: MoveId = f.meter >= 100 ? (r < 0.5 ? 'windmill' : r < 0.8 ? 'bolt' : 'slam') : r < 0.36 ? 'jab' : r < 0.62 ? 'cross' : r < 0.84 ? 'hook' : 'upper';
+      const id: MoveId =
+        f.meter >= 100
+          ? r < 0.4
+            ? 'windmill'
+            : r < 0.65
+              ? 'bolt'
+              : r < 0.85
+                ? 'skyhook'
+                : 'slam'
+          : r < 0.36
+            ? 'jab'
+            : r < 0.62
+              ? 'cross'
+              : r < 0.84
+                ? 'hook'
+                : 'upper';
       if (isOD(id)) f.meter = 0;
       this.startMove(f, id);
       st.cool = 0.22 + Math.random() * 0.45;
@@ -3886,7 +3924,7 @@ export class Game {
   /** the target reshapes the punch: body shots pitch down onto the ribs, head shots ride a little higher */
   private aimPose(f: Fighter, m: Move, p: Pose): Pose {
     if (this.aimsLow(f, m)) {
-      const pitch = m.id === 'upper' ? 0.3 : 0.5; // an uppercut to the body still travels up, just from lower down
+      const pitch = m.id === 'upper' || m.id === 'skyhook' ? 0.3 : 0.5; // an uppercut to the body still travels up, just from lower down
       return { sx: p.sx + pitch, sy: p.sy, sz: Math.min(1.2, p.sz + 0.06), ex: p.ex - 0.06 };
     }
     // HEAD: the eyes sit above the old strike line, so straights and hooks ride a touch higher to meet them
@@ -4060,8 +4098,9 @@ export class Game {
     p.state = 'idle';
     p.meter = 0;
     this.meterReadyShown = false;
-    // Cycle Freestyle Windmill Overdrive (muter-muter tangan lalu menghajar musuh) with Bolt & Slam
-    const odMoves: MoveId[] = ['windmill', 'bolt', 'windmill', 'slam'];
+    // THE OVERDRIVE BOOK — every press of R (meter full) runs to the next one of the four, so a comeback is never
+    // the same shape twice: the freestyle spinning smash, the lunging straight, the rising uppercut and the slam.
+    const odMoves: MoveId[] = ['windmill', 'bolt', 'skyhook', 'slam'];
     const pick = odMoves[p.moveSeq % odMoves.length];
     this.odToggle = !this.odToggle;
     if (fromDodge) {
@@ -4245,6 +4284,17 @@ export class Game {
             'pop-crit',
           );
         }
+      } else if (id === 'skyhook') {
+        // the launcher: the charge whistle drops a note as he sinks, and the call-out says which one is coming
+        this.sfx.whoosh(0.9);
+        this.sfx.crackle(0.35);
+        if (this.phase === 'fight') {
+          this.popup(
+            new THREE.Vector3(f.pos.x, 6.8 * f.scale, f.pos.y),
+            f.isPlayer ? '☄️ OVERDRIVE UPPERCUT!' : '⚠️ OVERDRIVE UPPERCUT MUSUH!',
+            'pop-crit',
+          );
+        }
       }
       // the director steps in for the charge: a short low hero angle before the strike lands
       if (f.isPlayer) this.startCine('od');
@@ -4275,7 +4325,7 @@ export class Game {
       blockT: 0,
       reactT: -1,
       reactAct: '' as '' | 'block' | 'side' | 'back',
-      habit: { jab: 0, cross: 0, hook: 0, upper: 0, slam: 0, bolt: 0, windmill: 0, grab: 0, counter: 0 } as Record<MoveId, number>,
+      habit: { jab: 0, cross: 0, hook: 0, upper: 0, slam: 0, bolt: 0, windmill: 0, skyhook: 0, grab: 0, counter: 0 } as Record<MoveId, number>,
       defStreak: 0,
       defT: 0,
       punishT: 0,
@@ -4439,7 +4489,9 @@ export class Game {
       e.meter = 0;
       ai.holdOD = 0;
       const odRoll = Math.random();
-      if (odRoll < 0.55) return 'windmill';
+      if (odRoll < 0.4) return 'windmill';
+      // the launcher only comes out when he is inside his own reach for it — thrown from range it wastes the meter
+      if (odRoll < 0.62 && dist <= 4.3 * e.scale) return 'skyhook';
       return dist > 4.0 * e.scale || odRoll < 0.8 ? 'bolt' : 'slam';
     }
     if (chain) {
@@ -4866,11 +4918,13 @@ export class Game {
       const r = Math.random();
       const id: MoveId =
         f.meter >= 100
-          ? r < 0.55
+          ? r < 0.45
             ? 'windmill'
-            : r < 0.8
+            : r < 0.7
               ? 'bolt'
-              : 'slam'
+              : r < 0.88
+                ? 'skyhook'
+                : 'slam'
           : r < 0.34
             ? 'jab'
             : r < 0.6
@@ -5521,6 +5575,19 @@ export class Game {
       this.fx.spark(fxp, 52, 16, 0xffb830, new THREE.Vector3(-toA.x, 0.18, -toA.y), 0.75, 0.75, 6);
       this.fx.spark(fxp, 28, 13, 0x5fe2ff, new THREE.Vector3(-toA.x, 0.1, -toA.y), 0.65, 0.6, 4);
     }
+    if (m.id === 'skyhook') {
+      // OVERDRIVE UPPERCUT: the shock goes UP. A white-gold sonic wave is driven straight up off the fist and two
+      // rings climb with it (they are flat, so they read as halos rising off the jaw), while the sparks are thrown
+      // up the same line — the whole burst tells you which way the body is about to travel.
+      const fxp = new THREE.Vector3(a.pos.x - toA.x * 1.5, 4.1 * a.scale, a.pos.y - toA.y * 1.5);
+      const up = new THREE.Vector3(-toA.x * 0.22, 1, -toA.y * 0.22).normalize();
+      this.fx.impactWave(fxp, up, 0xffe6b0, 6.5, 0.3);
+      this.fx.ring(a.pos.x - toA.x * 1.4, a.pos.y - toA.y * 1.4, 0xffd27a, 8.6, 0.5, 3.5 * a.scale);
+      this.fx.ring(a.pos.x - toA.x * 1.2, a.pos.y - toA.y * 1.2, 0xfff6dc, 5.2, 0.42, 4.5 * a.scale);
+      this.fx.spark(fxp, 46, 16, 0xffd27a, up, 0.8, 0.75, 9);
+      this.fx.spark(fxp, 24, 12, 0xffffff, up, 0.6, 0.6, 7);
+      this.fx.ring(a.pos.x, a.pos.y, 0xcfd6e6, 4.2, 0.35); // the canvas he pushed off
+    }
     if (m.id === 'counter') {
       // HALF AN OVERDRIVE — and the same fireworks, scaled down: a tight shock ring at the fist and a short speed
       // streak down the line of the punch, so a counter that connects reads as the Overdrive's little brother.
@@ -5801,7 +5868,9 @@ export class Game {
       const dir = new THREE.Vector2().addScaledVector(pd, 0.62).addScaledVector(away, 0.38).normalize();
       const force = m.knock * (0.72 + big * 0.5) * (a.runStrike ? 1.35 : 1) * (a.rage ? 1.2 : 1) * (crit ? 1.15 : 1);
       const horiz = THREE.MathUtils.clamp(force * 0.95, 4.5, 13.5);
-      const vert = m.kind === 'up' ? 12 + big * 4.5 : m.kind === 'side' ? 7.5 + big * 3 : 8 + big * 3.5;
+      // the Overdrive uppercut is THE launcher: it throws him highest of anything in the book (a heavy uppercut that
+      // was already a launcher, now with a meter behind it) — everything else keeps the standard profile
+      const vert = m.id === 'skyhook' ? 16.5 + big * 5 : m.kind === 'up' ? 12 + big * 4.5 : m.kind === 'side' ? 7.5 + big * 3 : 8 + big * 3.5;
       d.vy = vert;
       d.kb.copy(dir).multiplyScalar(horiz);
       // a hook turns him round in the air (the head is thrown off the axis, the body follows); a straight barely does
@@ -5809,7 +5878,7 @@ export class Game {
       // the limbs are thrown the way he is going (ragdoll kick side = the side the blow came across to)
       const sideL = dir.x * Math.cos(d.yaw) - dir.y * Math.sin(d.yaw); // + = driven to his left
       this.ragdollKick(d, 0.55 + big * 0.45, Math.abs(sideL) > 0.25 ? (sideL > 0 ? 1 : -1) : 1);
-      label = m.id === 'grab' ? 'THROW!' : m.id === 'windmill' ? 'FREESTYLE SMASH!' : broken && !launcher ? 'KNOCKDOWN!' : label || 'LAUNCH!';
+      label = m.id === 'grab' ? 'THROW!' : m.id === 'windmill' ? 'FREESTYLE SMASH!' : m.id === 'skyhook' ? 'SKYHOOK!' : broken && !launcher ? 'KNOCKDOWN!' : label || 'LAUNCH!';
     } else if (!armored) {
       // BOXING HIT PUSHBACK & RING DOMINANCE:
       // Each landed strike noticeably drives the defender backward across the canvas while the attacker steps in to press the advantage!
@@ -5908,7 +5977,7 @@ export class Game {
     // a player Overdrive that connects gets the director's punch-in on the point of impact — unless this is the
     // one that takes his head off, in which case the long HEAD RIP shot takes over instead
     const willRip = a.isPlayer && aim === AIM_HEAD && !d.decapitated && this.phase === 'fight';
-    if (a.isPlayer && isOD(m.id) && !willRip) this.startCine('hit', hitPos, m.id === 'bolt' ? toA : undefined);
+    if (a.isPlayer && isOD(m.id) && !willRip) this.startCine('hit', hitPos, m.id === 'bolt' || m.id === 'skyhook' ? toA : undefined);
     if (this.phase !== 'menu') {
       if (d.isPlayer) {
         this.flashAmt = Math.min(0.75, 0.22 + big * 0.35);

@@ -264,7 +264,7 @@ const CONTROLS: { title: string; rows: [string[], string][] }[] = [
     title: 'TARGET PUKULAN, RAGE & OVERDRIVE',
     rows: [
       [['G'], 'RAGE MODE 🔥 — tingkatkan kecepatan bertarung, kombo agresif & dorongan pukulan!'],
-      [['R'], 'OVERDRIVE FREESTYLE — muter-muter tangan 360° lalu menghajar lawan (bisa mencopot kepala)!'],
+      [['R'], 'OVERDRIVE (4 jurus bergiliran): FREESTYLE 360° muter-muter tangan → STRAIGHT lurus sepanjang ring → UPPERCUT pelontar ke udara (paling tinggi!) → SLAM hantaman atas. Semua menembus blok (bisa mencopot kepala)!'],
       [['Q', '/', 'T'], 'Ganti titik sasaran: KEPALA (stun & KO cepat) → DADA (kuras stamina & hancurkan blok) → REMIX (kombinasi otomatis atas-bawah, lawan tak bisa pasang blok di satu level)'],
     ],
   },

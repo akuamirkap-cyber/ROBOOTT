@@ -78,6 +78,25 @@ function FighterPlate({
   );
 }
 
+/** TEAM MATCH: the tag partner's slim plate under the main one */
+function PartnerPlate({ right, name, color, hp, max, ko }: { right?: boolean; name: string; color: string; hp: number; max: number; ko: boolean }) {
+  const pct = Math.max(0, Math.min(100, (hp / max) * 100));
+  return (
+    <div className={`mt-1.5 flex items-center gap-2 ${right ? 'flex-row-reverse' : ''} ${ko ? 'opacity-55' : ''}`}>
+      <span className="rounded-sm px-1 font-tech text-[7.5px] font-bold tracking-[0.16em] text-black" style={{ background: color }}>
+        {ko ? 'K.O.' : 'TAG'}
+      </span>
+      <span className="truncate font-tech text-[10px] font-black tracking-[0.1em]" style={{ color, textDecoration: ko ? 'line-through' : 'none' }}>
+        {name}
+      </span>
+      <div className={`h-[7px] w-2/5 overflow-hidden rounded-sm border border-white/15 bg-black/60 ${right ? 'mr-auto' : 'ml-auto'}`}>
+        <div className="h-full transition-[width] duration-150" style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${color}, #ffffff)`, marginLeft: right ? 'auto' : 0 }} />
+      </div>
+      <span className="font-tech text-[9px] tracking-widest text-white/55">{Math.ceil(hp)}</span>
+    </div>
+  );
+}
+
 function Hint({ k, children }: { k: string; children: string }) {
   return (
     <span className="mr-3 inline-flex items-center gap-1">
@@ -92,14 +111,26 @@ export function Hud({ h, touch }: { h: HudState; touch: boolean }) {
   const meterReady = h.meter >= 100;
   const timeLow = h.phase === 'fight' && h.timeLeft <= 10;
   const pLow = h.phase === 'fight' && h.pHp > 0 && h.pHp / h.pMax < 0.25;
-  const bannerColor = h.banner ? (h.banner.kind === 'ko' ? '#ff3b3b' : h.banner.kind === 'fight' ? '#ffd34a' : '#ffffff') : '#ffffff';
+  const bannerColor = h.banner
+    ? h.banner.kind === 'ko'
+      ? '#ff3b3b'
+      : h.banner.kind === 'fight'
+        ? '#ffd34a'
+        : h.banner.kind === 'count'
+          ? '#7fe3ff'
+          : '#ffffff'
+    : '#ffffff';
+  const bannerShort = h.banner?.kind === 'fight' || h.banner?.kind === 'count';
   return (
     <div className="pointer-events-none absolute inset-0 text-white">
       {pLow && <div className="lowhp-vignette" />}
 
       {/* ---------- top plates + timer ---------- */}
       <div className="absolute inset-x-0 top-0 flex items-start justify-center gap-2 px-3 pt-3 sm:gap-4 sm:px-8 sm:pt-5">
-        <FighterPlate name={PLAYER_NAME} nameColor="#9fe3ff" from="#1b8fe0" to="#35d6ff" hp={h.pHp} max={h.pMax} wins={h.wins[0]} stam={h.stam} />
+        <div className="min-w-0 flex-1">
+          <FighterPlate name={PLAYER_NAME} nameColor="#9fe3ff" from="#1b8fe0" to="#35d6ff" hp={h.pHp} max={h.pMax} wins={h.wins[0]} stam={h.stam} />
+          {h.team && <PartnerPlate name={h.team.ally.name} color={h.team.ally.color} hp={h.team.ally.hp} max={h.team.ally.max} ko={h.team.ally.ko} />}
+        </div>
         <div className="flex w-24 shrink-0 flex-col items-center sm:w-32">
           <div className={`timer-hex ${timeLow ? 'timer-low' : ''}`}>
             <span className="font-display text-4xl leading-none sm:text-5xl">{h.timeLeft}</span>
@@ -120,7 +151,10 @@ export function Hud({ h, touch }: { h: HudState; touch: boolean }) {
             </div>
           )}
         </div>
-        <FighterPlate right name={h.eName} nameColor={enemyColor} from={h.ultra ? '#7a0c1f' : '#a31818'} to={enemyColor === '#ff3b3b' ? '#ff4a4a' : enemyColor} hp={h.eHp} max={h.eMax} wins={h.wins[1]} />
+        <div className="min-w-0 flex-1">
+          <FighterPlate right name={h.eName} nameColor={enemyColor} from={h.ultra ? '#7a0c1f' : '#a31818'} to={enemyColor === '#ff3b3b' ? '#ff4a4a' : enemyColor} hp={h.eHp} max={h.eMax} wins={h.wins[1]} />
+          {h.team && <PartnerPlate right name={h.team.enemy2.name} color={h.team.enemy2.color} hp={h.team.enemy2.hp} max={h.team.enemy2.max} ko={h.team.enemy2.ko} />}
+        </div>
       </div>
 
       {/* ---------- peek-a-boo / dempsey roll ---------- */}
@@ -189,8 +223,9 @@ export function Hud({ h, touch }: { h: HudState; touch: boolean }) {
               h.aimFlash > 0 ? 'border-rose-300 bg-rose-400/25 text-rose-100' : 'border-white/25 bg-black/45 text-white/70'
             }`}
           >
-            <span className={h.aim === 1 ? 'text-orange-300' : 'text-sky-300'}>◎</span>
-            <span>TARGET {h.aim === 1 ? 'DADA' : 'KEPALA'}</span>
+            <span className={h.aimMode === 2 ? 'text-fuchsia-300' : h.aim === 1 ? 'text-orange-300' : 'text-sky-300'}>{h.aimMode === 2 ? '◎◎' : '◎'}</span>
+            <span>TARGET {h.aimMode === 2 ? 'REMIX' : h.aim === 1 ? 'DADA' : 'KEPALA'}</span>
+            {h.aimMode === 2 && <span className={`ml-1 text-[9px] ${h.aim === 1 ? 'text-orange-300' : 'text-sky-300'}`}>▸{h.aim === 1 ? 'DADA' : 'KEPALA'}</span>}
           </div>
           {h.parry ? (
             <div className="mt-1 animate-pulse border border-amber-300/70 bg-amber-400/20 px-2 py-0.5 text-center font-tech text-[10px] font-bold tracking-[0.22em] text-amber-100">PARRY [L]!</div>
@@ -199,6 +234,19 @@ export function Hud({ h, touch }: { h: HudState; touch: boolean }) {
               CTR [L] {h.parryCd > 0 ? `${h.parryCd.toFixed(1)}s` : 'SIAP'}
             </div>
           )}
+          {/* RAGE MODE [G] status badge */}
+          <div
+            className={`mt-1 flex items-center justify-center gap-1.5 border px-2 py-1 font-tech text-[10px] font-bold tracking-[0.22em] backdrop-blur-sm transition-all ${
+              h.rage
+                ? 'animate-pulse border-orange-400 bg-gradient-to-r from-red-600/50 to-amber-500/40 text-amber-100 shadow-[0_0_16px_rgba(255,80,30,0.65)]'
+                : (h.rageFlash ?? 0) > 0
+                  ? 'border-orange-300 bg-orange-500/25 text-orange-100'
+                  : 'border-white/25 bg-black/45 text-white/65'
+            }`}
+          >
+            <span>🔥</span>
+            <span>{h.rage ? 'RAGE AKTIF [G]' : 'RAGE [G]'}</span>
+          </div>
         </div>
       )}
 
@@ -222,6 +270,7 @@ export function Hud({ h, touch }: { h: HudState; touch: boolean }) {
           <div>
             <Hint k="SPACE">dodge ◎ (tahan = blok)</Hint>
             <Hint k="R">overdrive</Hint>
+            <Hint k="G">rage 🔥</Hint>
             <Hint k="E">ippo</Hint>
           </div>
           <div>
@@ -245,16 +294,16 @@ export function Hud({ h, touch }: { h: HudState; touch: boolean }) {
         <div className="absolute inset-0 flex items-center justify-center">
           <div key={h.banner.id} className="relative flex w-full items-center justify-center">
             <div
-              className={`banner-band ${h.banner.kind === 'fight' ? '' : 'banner-band-long'}`}
+              className={`banner-band ${bannerShort ? '' : 'banner-band-long'}`}
               style={{
                 background: 'linear-gradient(90deg, transparent, rgba(6,10,26,0.88) 16%, rgba(6,10,26,0.88) 84%, transparent)',
                 borderTop: `3px solid ${bannerColor}`,
                 borderBottom: `3px solid ${bannerColor}`,
               }}
             />
-            <div className={`relative text-center ${h.banner.kind === 'fight' ? 'banner-anim' : 'banner-anim-long'}`}>
+            <div className={`relative text-center ${bannerShort ? 'banner-anim' : 'banner-anim-long'}`}>
               <div
-                className={`font-display leading-none ${h.banner.kind === 'ko' ? 'text-[22vw] sm:text-[16vw]' : 'text-[16vw] sm:text-[11vw]'}`}
+                className={`font-display leading-none ${h.banner.kind === 'ko' ? 'text-[22vw] sm:text-[16vw]' : h.banner.kind === 'count' ? 'text-[30vw] sm:text-[20vw]' : 'text-[16vw] sm:text-[11vw]'}`}
                 style={{ color: bannerColor, textShadow: '0 0 40px currentColor, 0 6px 0 rgba(0,0,0,0.7)' }}
               >
                 {h.banner.text}
@@ -309,7 +358,8 @@ export function TouchControls({ game }: { game: Game | null }) {
         <div className="absolute left-0 -top-[68px]"><TouchBtn game={game} code="Space" label="DODGE / BLOK" className="bg-emerald-500/50 text-[9px]" size="h-14 w-14" /></div>
         <div className="absolute left-[76px] -top-[68px]"><TouchBtn game={game} code="KeyR" label="OD" className="bg-amber-400/60" size="h-14 w-14" /></div>
         <div className="absolute left-[152px] -top-[68px]"><TouchBtn game={game} code="KeyE" label="IPPO" className="bg-cyan-400/50 text-[10px]" size="h-14 w-14" /></div>
-        <div className="absolute left-[76px] -top-[136px]"><TouchBtn game={game} code="Freestyle" label="GAYA" className="bg-yellow-400/50 text-[10px]" size="h-12 w-12" /></div>
+        <div className="absolute left-[20px] -top-[136px]"><TouchBtn game={game} code="KeyG" label="RAGE" className="bg-red-500/65 text-[10px]" size="h-12 w-12" /></div>
+        <div className="absolute left-[96px] -top-[136px]"><TouchBtn game={game} code="Freestyle" label="GAYA" className="bg-yellow-400/50 text-[10px]" size="h-12 w-12" /></div>
       </div>
     </div>
   );

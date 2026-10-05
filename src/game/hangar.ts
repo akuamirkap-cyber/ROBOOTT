@@ -229,8 +229,10 @@ export function buildHangar(scene: THREE.Scene): Hangar {
   red.position.set(-12, 8, -2);
   g.add(red);
 
-  // ---- key light for the hero: cool white from the front-right
-  const key = new THREE.SpotLight(0xdfe9ff, 700, 60, 0.62, 0.65, 2);
+  // ---- key light for the hero: cool white from the front-right.
+  // Dialled so the machine's lit side lands just under white: any hotter and the plating has no gradation left to
+  // shade with, and the whole hero turns into a glare source (the lobby bloom threshold sits above this — Game.step)
+  const key = new THREE.SpotLight(0xdfe9ff, 500, 60, 0.62, 0.65, 2);
   key.position.set(8, 14, 11);
   key.target.position.set(0, 5, 0);
   g.add(key, key.target);
@@ -346,7 +348,7 @@ export function buildHangar(scene: THREE.Scene): Hangar {
     hazeRed.position.x = -9 + Math.sin(t * 0.21) * 1.5;
     hazeCool.position.x = 12 + Math.cos(t * 0.17) * 1.2;
     (fogSheet.material as THREE.MeshBasicMaterial).opacity = 0.5 + Math.sin(t * 0.45) * 0.15;
-    key.intensity = 700 + Math.sin(t * 7.3) * 10;
+    key.intensity = 500 + Math.sin(t * 7.3) * 7;
   };
   const setVsBackdrop = (on: boolean) => {
     vsWall.visible = on;

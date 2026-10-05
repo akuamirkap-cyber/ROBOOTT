@@ -6143,7 +6143,7 @@ export class Game {
       hitUp: 0,
       fall: 0,
       time: t,
-      glow: 0.55 + Math.sin(t * 2.5) * 0.12,
+      glow: 0.45 + Math.sin(t * 2.5) * 0.09, // the lobby pose glows, it does not flare
       flash: 0,
       tilt: 0,
       dash: 0,
@@ -7337,7 +7337,20 @@ export class Game {
     cam.updateProjectionMatrix();
     // THE GLOW: the rig breathes a real bloom, and every heavy blow and every flash pushes it — but only a
     // little, and never past the point where the dark of the hall starts turning grey
-    this.bloom.strength = Math.min(0.72, 0.4 + this.trauma * 0.14 + this.flashAmt * 0.18);
+    if (this.phase === 'menu') {
+      // THE LOBBY IS A PORTRAIT, NOT A LIGHT SHOW. The hero is lit by one hard key in a dark bay, so a lot of his
+      // plating sits right at white; a threshold low enough to catch that turns the armour itself into glare and
+      // the whole shot goes milky. Up here the pass is tightened — threshold well above the plating, strength and
+      // radius down — so ONLY what is genuinely emissive (optics, core, the light bars) carries a halo, and the
+      // machine reads as a machine. Everywhere else the in-match values below are the ones that matter.
+      this.bloom.threshold = 1.5;
+      this.bloom.strength = 0.22;
+      this.bloom.radius = 0.5;
+    } else {
+      this.bloom.threshold = 1.16;
+      this.bloom.strength = Math.min(0.72, 0.4 + this.trauma * 0.14 + this.flashAmt * 0.18);
+      this.bloom.radius = 0.6;
+    }
   }
 
   // ------------------------------------------------------------ popups + hud

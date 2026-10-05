@@ -9,7 +9,9 @@
 //   §2  it is the Overdrive's punch: the fist crosses on the Overdrive's own line (sampled with the game's sampler)
 //   §3  it is still dodgeable: not unblockable, and the AI's answer to it is always to step off the line
 //   §4  it chains out of your own punches: a landed jab / hook / uppercut opens the cancel that throws it
-import { MOVES, MOVE_EXTRA, UNBLOCKABLE, TELL, sampleKeys, defenceAgainst } from './.__game.mjs';
+//   §5  THE JAB pulls its weight: fastest + longest + cheapest punch, real chip on a guard, and the meter engine
+//   §6  THE ROPES PUSH, THEY DO NOT TELEPORT: every correction is capped per frame, and a rebound can only die out
+import { MOVES, MOVE_EXTRA, UNBLOCKABLE, TELL, sampleKeys, defenceAgainst, jabChainSpeed, meterGainFor, ropeInwardStep, ropeHardStep, ropeSlingSpeed, ropeEnergyDamp } from './.__game.mjs';
 
 let fails = 0;
 const ok = (label, cond, info = '') => {
@@ -100,6 +102,54 @@ console.log('\n§4  it chains straight out of your own punches (H/J/K → L)');
   ok('jab → counter straight lands in under a second', chain < 1.0, `${f(chain)} s from the jab landing`);
   // the anti-spam cooldown is short enough to use it as a combo ender, long enough that it is not a jab
   ok('it is not spammable, but it is usable', MOVES.counter.cost > MOVES.jab.cost, `cost ${f(MOVES.counter.cost)} vs jab ${f(MOVES.jab.cost)}`);
+}
+
+// ============================================================================================== §5 the jab's job
+console.log('\n§5  the jab pulls its weight (the punch the whole style is built on)');
+{
+  const J = MOVES.jab;
+  const basics = ['cross', 'hook', 'upper'];
+  // the measuring stick: it out-reaches every other basic punch, and it is the fastest and the cheapest
+  ok('longest reach of the basic punches', basics.every((id) => J.reach > MOVES[id].reach), `${f(J.reach)} m vs ${basics.map((id) => f(MOVES[id].reach)).join(' / ')}`);
+  ok('fastest punch in the book', basics.every((id) => J.dur < MOVES[id].dur) && J.dur < C.dur, `${f(J.dur)} s`);
+  ok('cheapest punch in the book', basics.every((id) => J.cost < MOVES[id].cost) && J.cost < C.cost, `${f(J.cost)} stamina`);
+  // ...but it is still a jab: it chips a guard instead of breaking it, and it never lands like a cross
+  ok('it chips a guard harder than the cross does', J.blockMul > MOVES.cross.blockMul, `${f(J.blockMul)} vs ${f(MOVES.cross.blockMul)}`);
+  ok('it is still a jab, not a knockdown', J.dmg < MOVES.cross.dmg && J.knock < MOVES.cross.knock, `dmg ${f(J.dmg)} / knock ${f(J.knock)}`);
+  // the rhythm: a chain link makes the next jab faster, monotonically, and it tops out at +30 %
+  const speeds = [0, 1, 2, 3, 4].map((n) => jabChainSpeed(n));
+  ok('each link of a jab chain tightens the next', speeds.every((v, i) => i === 0 || v > speeds[i - 1]), speeds.map((v) => v.toFixed(2)).join(' → '));
+  ok('the chain is capped (no infinite machine gun)', jabChainSpeed(4) === jabChainSpeed(60) && jabChainSpeed(60) <= 1.3 + 1e-9, `cap ×${f(jabChainSpeed(60))}`);
+  // the economy: throwing jabs banks Overdrive meter faster than any other punch — that is why it matters
+  const rate = (id) => meterGainFor(id, MOVES[id].dmg) / MOVES[id].dur;
+  ok('the jab is the best Overdrive charger', rate('jab') > rate('cross') * 1.6 && rate('jab') > rate('hook') && rate('jab') > rate('upper'), `${f(rate('jab'))} vs cross ${f(rate('cross'))} meter/s`);
+  ok('...and a chained jab charges even faster', meterGainFor('jab', J.dmg) / (J.dur / jabChainSpeed(4)) > rate('jab') * 1.25, `${f(meterGainFor('jab', J.dmg) / (J.dur / jabChainSpeed(4)))} meter/s at full chain`);
+}
+
+// =========================================================================================== §6 the arena ropes
+console.log('\n§6  the ropes push a body, they never teleport it');
+{
+  const step60 = ropeInwardStep(1 / 60);
+  const hard60 = ropeHardStep(1 / 60);
+  const hitch = ropeInwardStep(0.35);
+  ok('one frame of rope push is a lean, not a jump', step60 < 0.2, `${f(step60)} m in the worst 60 fps frame`);
+  ok('a frame hitch cannot buy extra travel', Math.abs(hitch - ropeInwardStep(1 / 30)) < 1e-9 && hitch < 0.35, `hitch frame capped at ${f(hitch)} m`);
+  ok('the fully stretched rope also gives back in frames', hard60 < 0.35 && ropeHardStep(0.35) === ropeHardStep(1 / 30), `${f(hard60)} m in the worst 60 fps frame`);
+  // a body 3 m through the rope line is eased back over several frames — the old code did it in one
+  const framesToClear = Math.ceil(3 / step60);
+  ok('being metres through the ropes resolves as a slide', framesToClear >= 15 && framesToClear <= 30, `${framesToClear} frames to slide 3 m back in`);
+  // the sling: the rope may never throw a body back in faster than it arrived — no escalating rally
+  const vIns = [3, 4, 6.2, 9, 13, 20];
+  const out = vIns.map((v) => ropeSlingSpeed(1, v) * ropeEnergyDamp(ropeSlingSpeed(1, v) + v * 0.4, v));
+  ok('a rebound never leaves faster than it arrived', out.every((w, i) => w <= vIns[i] + 1e-9), out.map((w, i) => `${f(vIns[i])}→${f(w)}`).join(' '));
+  // ...so a rally between two ropes loses energy every bounce instead of turning into a pinball
+  let v = 6.2;
+  const rally = [v];
+  for (let i = 0; i < 5; i++) {
+    v = ropeSlingSpeed(1, v) * ropeEnergyDamp(ropeSlingSpeed(1, v) + v * 0.4, v);
+    rally.push(v);
+  }
+  ok('a rope rally dies out, it does not wind up', rally.every((w, i) => i === 0 || w <= rally[i - 1] + 1e-9), rally.map((w) => f(w)).join(' → ') + ' m/s');
 }
 
 console.log(fails === 0 ? '\nCOUNTER STRAIGHT: ALL PASS\n' : `\n${fails} FAILURE(S)\n`);

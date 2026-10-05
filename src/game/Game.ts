@@ -29,7 +29,7 @@ import {
 export { CAM_MODES, type CamMode } from './cammath';
 // the strike data + the samplers, exported for the harness that guards them (striketest.mjs): the numbers the test
 // asserts against ARE the numbers the game runs, so a retune can never quietly break the balance rules
-export { MOVES, MOVE_EXTRA, UNBLOCKABLE, TELL, sampleKeys };
+export { MOVES, MOVE_EXTRA, UNBLOCKABLE, TELL, sampleKeys, jabChainSpeed };
 
 // ------------------------------------------------------------------ data
 export type HeroPose = 'ready' | 'stand' | 'guard' | 'victory' | 'taunt' | 'vs' | 'menace';
@@ -411,14 +411,18 @@ const MOVES: Record<MoveId, Move> = {
   // the punch at once) → OVERSHOOT (the rotation keeps going past the target) → SNAP BACK (a short recoil pull)
   // → settle to guard. The overshoot + recoil pair is what makes a punch read as heavy on camera.
   jab: {
-    id: 'jab', arm: 0, dur: 0.56, strikeAt: 0.07, impact: 0.15, cancel: 0.28, dmg: 6, reach: 4.1, cost: 5, stun: 0.5, knock: 3.5, blockMul: 0.15, power: 0.3, hitY: 4.5, step: 1.1, kind: 'front',
+    // THE JAB is the tool the whole style is built on: the longest and fastest of the basic punches, the one that
+    // is meant to be doubled and tripled up, and the cheapest way to charge the Overdrive — it measures the range,
+    // it pokes a guard open, and it never leaves you open. It is still a jab (a 7, not a knockdown), but it is a
+    // jab with a two-ton machine behind it.
+    id: 'jab', arm: 0, dur: 0.55, strikeAt: 0.07, impact: 0.15, cancel: 0.27, dmg: 7, reach: 4.4, cost: 4, stun: 0.55, knock: 4, blockMul: 0.22, power: 0.36, hitY: 4.5, step: 1.35, kind: 'front',
     keys: [
       k(0, GUARD),
       k(0.07, P(-0.34, -0.02, 0.14, -2.7), 0.42, -0.1, -0.34, 0.26, 'out'), // coil back
-      k(0.15, P(-1.68, -0.36, 0, -0.02), -0.78, 0.4, 0.98, 0.06, 'in'), // full extension
-      k(0.21, P(-1.74, -0.36, 0, 0.02), -0.88, 0.44, 1.08, 0.04), // overshoot whip
+      k(0.15, P(-1.76, -0.36, 0, -0.02), -0.8, 0.42, 1.04, 0.06, 'in'), // full extension
+      k(0.21, P(-1.83, -0.36, 0, 0.02), -0.9, 0.46, 1.14, 0.04), // overshoot whip
       k(0.34, P(-1.15, -0.3, 0.12, -0.75), -0.15, 0.18, 0.35, 0.13), // snap back off the target
-      k(0.56, GUARD),
+      k(0.55, GUARD),
     ],
   },
   cross: {
@@ -616,6 +620,24 @@ export const defenceAgainst = (id: MoveId, dodge: number): 'block' | 'side' | 'b
 const PARRY_ACTIVE = 0.3; // = the move's strikeAt: the whole wind-up is the catch window
 
 /**
+ * THE JAB RHYTHM (see startMove). A jab fired inside this window of the previous one is part of a chain: each
+ * link makes the next jab up to JAB_CHAIN_STEP faster, capped at JAB_CHAIN_MAX links. It is the boxing 1-1-1-1:
+ * the first jab measures the range, and by the fourth the machine gun is open — while any other punch, or a
+ * beat of footwork longer than the window, resets it.
+ */
+const JAB_CHAIN_WIN = 0.62; // s — the jab's own length plus a little; longer than this is not a chain
+const JAB_CHAIN_STEP = 0.075; // +7.5 % per link
+const JAB_CHAIN_MAX = 4; // ...up to +30 %
+const jabChainSpeed = (chain: number) => 1 + JAB_CHAIN_STEP * THREE.MathUtils.clamp(Math.round(chain), 0, JAB_CHAIN_MAX);
+
+/**
+ * Overdrive meter a clean hit banks for the attacker. Every punch charges it, but the JAB — the cheapest and
+ * fastest punch in the book — charges it at close to double rate, so poking the guard IS how you fill the meter.
+ * Exported (like defenceAgainst) so `striketest.mjs` can assert the economy instead of trusting the reader.
+ */
+export const meterGainFor = (id: MoveId, dmg: number, ultra = false) => dmg * 1.3 * (id === 'jab' ? 1.85 : 1) * (ultra ? 1.5 : 1);
+
+/**
  * WHERE YOU AIM. A tap on SPACE (or T) switches the point of impact between the HEAD and the BODY, and every
  * punch then follows: the pose drops onto the target, the sparks / flash / shock ring happen AT that point of
  * impact, and the damage profile changes with it.
@@ -732,7 +754,8 @@ class Fighter {
   ropeW = 0; // smoothed "on the ropes" weight for the pose (fast in, slow out)
   ropeBack = 1; // smoothed: +1 = the ropes are at his back (draped over them), -1 = he ran into them chest first
   slingT = 0; // ROPE CATAPULT: time until the stretched ropes fling him back into the ring
-  slingV = 0; // speed of that fling
+  slingV = 0; // ...and how hard they may throw him
+  slingIn = 0; // the speed he actually hit them with: a rope can NEVER return more than it was given
   slingX = 0; // its direction (unit, towards the ring)
   slingZ = 0;
   fallS = new Spring();
@@ -790,6 +813,8 @@ class Fighter {
   rageFlash = 0; // > 0 while the Rage Mode badge flashes on HUD
   strikeVar = 0; // 0..3 biomechanical punch variation index so spam never looks monotonous
   spamCount = 0; // consecutive rapid attacks counter for natural flow & rhythm
+  jabChain = 0; // JAB RHYTHM: how many jabs have been thrown inside the chain window (each one tightens the next)
+  lastJabAt = -10; // animT of the previous jab
   lastAtkAt = -10; // animT of previous attack
   aliSign = 1; // alternating weave direction for Muhammad Ali pendulum dodges
   dodgeTail = 0; // smooth post-dodge follow-through timer so springs & poses never snap at dodge end
@@ -898,6 +923,8 @@ class Fighter {
     this.ropeW = 0;
     this.ropeBack = 1;
     this.slingT = 0;
+    this.slingIn = 0;
+    this.slingT = 0;
     this.slingV = 0;
     this.acc.set(0, 0);
     this.prevV.set(0, 0);
@@ -957,6 +984,8 @@ class Fighter {
     this.rageFlash = 0;
     this.strikeVar = 0;
     this.spamCount = 0;
+    this.jabChain = 0;
+    this.lastJabAt = -10;
     this.lastAtkAt = -10;
     this.aliSign = 1;
     this.dodgeTail = 0;
@@ -988,6 +1017,24 @@ const BODY_R = 0.9; // how far the back of the chest / upper back sits behind th
 const FLEX = 0.95; // how far the ropes can stretch before they hold
 const ROPE_K = 105; // rope stiffness
 const ROPE_C = 9.5; // rope damping (slightly under-damped → a soft, small rebound)
+// HOW FAST THE ROPES MAY PUSH A BODY. The multi-point containment of a lying / flying machine used to apply its
+// whole correction in one frame, so a body that fell near the ropes was SNAPPED up to three metres inwards (the
+// "pindah" glitch). A rope pushes: the correction is now applied as motion at these speeds, never as a jump —
+// it resolves in a few frames and reads as the body sliding off the rope instead of teleporting through the ring.
+const ROPE_SHOVE = 9; // m/s — how fast an end that is through the rope is eased back in
+const ROPE_STOP = 18; // m/s — the hard stop against a fully stretched rope, also spread over frames
+// THE ROPE RULES, as pure numbers — the game applies these, and striketest.mjs §6 holds them to account.
+// A body that is through the rope line is eased back in as MOTION: the most any single frame may move it is
+// ropeInwardStep(dt), and a frame hitch cannot buy extra travel because dt itself is capped inside the step. That
+// capped step is the whole fix for the "pindah" glitch: the old containment applied its entire correction at once,
+// which is why a body lying near the ropes could be snapped metres across the ring in one frame.
+export const ropeInwardStep = (dt: number) => ROPE_SHOVE * Math.min(dt, 1 / 30);
+/** How far the absolute (fully stretched) rope may take back in ONE frame — same frame-hitch cap. */
+export const ropeHardStep = (dt: number) => ROPE_STOP * Math.min(dt, 1 / 30);
+/** The speed a rope sling may throw a body back into the ring at: at most what it arrived with, never a launcher. */
+export const ropeSlingSpeed = (pull: number, vIn: number) => Math.min(5 + pull * 7.5, Math.max(3, vIn * 0.85));
+/** Damping so a rebound may never leave the ropes faster (inwards) than it arrived — ropes give back, never add. */
+export const ropeEnergyDamp = (inW: number, vIn: number) => (inW > vIn && inW > 0.001 ? vIn / inW : 1);
 const TIP_LEN = 6.0; // height of a robot, used for its fall footprint
 const RING_BASE = 11.9;
 let RING = RING_BASE; // TEAM MATCH grows the ring (see Game.setRingScale)
@@ -4235,8 +4282,18 @@ export class Game {
     f.winStrike = (f.dodgeWinT > 0 || isReactiveCounter) && !isOD(id);
     const dodgeSpd = isReactiveCounter ? 1.48 : f.winStrike ? DODGE_WIN_SPD : 1;
     const rageSpd = f.isPlayer && f.rage ? 1.2 : 1;
-    const spamRhythm = f.spamCount >= 2 ? 1 + ((f.strikeVar % 3) - 1) * 0.05 : 1;
-    f.atkSpd = dodgeSpd * rageSpd * spamRhythm;
+    // THE JAB RHYTHM. The jab is the one punch that is MEANT to be doubled up, so it gets a real rhythm instead
+    // of the general spam jitter: every jab thrown inside the chain window tightens the next one (up to +30 %),
+    // which turns a flurry into an escalating piston — 1-1-1-1 — rather than a mush of equal taps. Any other
+    // punch, or a pause, drops the chain back to zero.
+    if (id === 'jab') f.jabChain = f.animT - f.lastJabAt < JAB_CHAIN_WIN ? Math.min(JAB_CHAIN_MAX, f.jabChain + 1) : 0;
+    else if (f.animT - f.lastJabAt >= JAB_CHAIN_WIN) f.jabChain = 0;
+    if (id === 'jab') f.lastJabAt = f.animT;
+    const jabSpd = id === 'jab' ? jabChainSpeed(f.jabChain) : 1;
+    // a jab also keeps a metronome-steady cadence: the rhythm jitter that keeps the big punches from looking
+    // copy-pasted would read as sloppy on the one punch you are supposed to be able to repeat on beat
+    const spamRhythm = id === 'jab' ? 1 : f.spamCount >= 2 ? 1 + ((f.strikeVar % 3) - 1) * 0.05 : 1;
+    f.atkSpd = dodgeSpd * rageSpd * spamRhythm * jabSpd;
     if (f.isPlayer) {
       const tgtYaw = Math.atan2(this.enemy.pos.x - f.pos.x, this.enemy.pos.y - f.pos.y);
       f.yaw += wrapAngle(tgtYaw - f.yaw) * (id === 'counter' || f.winStrike ? 0.9 : 0.6);
@@ -5008,6 +5065,14 @@ export class Game {
       if (f.slingT <= 0 && f.state !== 'ko' && f.state !== 'down' && f.state !== 'air') {
         f.kb.x += f.slingX * f.slingV;
         f.kb.y += f.slingZ * f.slingV;
+        // ENERGY CHECK: whatever the spring and the sling have added together, the body may not leave the ropes
+        // faster (inwards) than it arrived. This is what makes a rope rebound a rebound — it dies out.
+        const inW = f.kb.x * f.slingX + f.kb.y * f.slingZ; // how fast it is now travelling back into the ring
+        const k = ropeEnergyDamp(inW, f.slingIn);
+        if (k < 1) {
+          f.kb.x *= k;
+          f.kb.y *= k;
+        }
         f.hit = Math.max(f.hit, 0.45);
         f.hitF = 1; // thrown FORWARD this time: the chest leads, the head trails behind
         f.hitL = 0;
@@ -5211,23 +5276,37 @@ export class Game {
         [sy * front, cy * front],
         [cy * sideK * sgnZ, -sy * sideK * sgnZ],
       ];
-      const limit = RING_IN - 0.35;
+      // Each end is held inside THE SAME ROPE LINE the body centre is held inside — `touch` plus the same ropeGive
+      // curve the drawn rope uses, measured at that end's own position along the rope. The old code compared the
+      // ends against a second, stricter limit (RING_IN - 0.35) that was never on screen, so a body lying a little
+      // inside the rope line still measured as "through it" and got yanked inward by up to three metres.
+      const cap = ropeInwardStep(dt);
       let shX = 0;
       let shZ = 0;
       for (const [ox, oz] of ends) {
         const px = nx + ox;
         const pz = nz + oz;
-        if (Math.abs(px) > limit) shX = Math.abs(px) - limit > Math.abs(shX) ? (px > 0 ? -(px - limit) : limit - px) : shX;
-        if (Math.abs(pz) > limit) shZ = Math.abs(pz) - limit > Math.abs(shZ) ? (pz > 0 ? -(pz - limit) : limit - pz) : shZ;
+        const lx = touch + ropeGive(pz);
+        const lz = touch + ropeGive(px);
+        if (Math.abs(px) > lx) {
+          const o = Math.abs(px) - lx;
+          if (o > Math.abs(shX)) shX = (px > 0 ? -1 : 1) * o;
+        }
+        if (Math.abs(pz) > lz) {
+          const o = Math.abs(pz) - lz;
+          if (o > Math.abs(shZ)) shZ = (pz > 0 ? -1 : 1) * o;
+        }
       }
+      // ...and it is applied as MOTION, capped per frame. While the error remains the next frame pushes again, so
+      // the body keeps sliding in at exactly ROPE_SHOVE until it is clear — a lean, never a pop.
       if (shX !== 0) {
-        nx += shX;
+        nx += THREE.MathUtils.clamp(shX, -cap, cap);
         if (f.kb.x * shX < 0) f.kb.x *= 0.2;
         if (f.vel.x * shX < 0) f.vel.x = 0;
         this.arena.ropePress(shX < 0 ? 20 : -20, nz, Math.min(0.6, Math.abs(shX)));
       }
       if (shZ !== 0) {
-        nz += shZ;
+        nz += THREE.MathUtils.clamp(shZ, -cap, cap);
         if (f.kb.y * shZ < 0) f.kb.y *= 0.2;
         if (f.vel.y * shZ < 0) f.vel.y = 0;
         this.arena.ropePress(nx, shZ < 0 ? 20 : -20, Math.min(0.6, Math.abs(shZ)));
@@ -5277,10 +5356,14 @@ export class Game {
       if (fresh && vTot > 2.5 && f.wallCd <= 0) this.ropeImpact(f, ax === 0 ? sgn : 0, ax === 1 ? sgn : 0, vTot);
     }
     // absolute stop: the body can never pass the fully stretched rope (which gives less and less towards the posts)
+    // — but it is STOPPED BY VELOCITY first, and the position clamp only ever takes back the part of the frame's
+    // travel that could not be stopped (capped, see ROPE_STOP). A hard clamp is what turned a fast body in the ropes
+    // into a teleport: the whole overshoot used to land on the position in a single frame.
     const hardX = touch + ropeGive(nz);
     const hardZ = touch + ropeGive(nx);
-    const cx = THREE.MathUtils.clamp(nx, -hardX, hardX);
-    const cz = THREE.MathUtils.clamp(nz, -hardZ, hardZ);
+    const stopCap = ropeHardStep(dt);
+    const cx = Math.abs(nx) <= hardX ? nx : Math.sign(nx) * Math.max(hardX, Math.abs(nx) - stopCap);
+    const cz = Math.abs(nz) <= hardZ ? nz : Math.sign(nz) * Math.max(hardZ, Math.abs(nz) - stopCap);
     if (cx !== nx) {
       if (f.kb.x * nx > 0) f.kb.x *= 0.2;
       if (f.vel.x * nx > 0) f.vel.x = 0;
@@ -5469,9 +5552,14 @@ export class Game {
       this.sfx.cheer(0.5);
       this.hype = Math.max(this.hype, 0.8);
       this.popup(new THREE.Vector3(f.pos.x, 6.4 * f.scale, f.pos.y), 'ROPE BOUNCE!', 'pop-crit');
-      // the ropes stretch for a beat and then CATAPULT him back into the ring (see updateFighter)
+      // the ropes stretch for a beat and then CATAPULT him back into the ring (see updateFighter). The throw is
+      // metred against the speed he ACTUALLY hit them with: a rope returns less than it was given, never more, so
+      // the rebound decays instead of escalating — the old flat 5-12.5 m/s add on top of the spring's own push
+      // could hand a body MORE speed than it arrived with, and two ropes would then rally it back and forth
+      // faster and faster across the ring.
       f.slingT = 0.16 + p * 0.08;
-      f.slingV = 5 + p * 7.5;
+      f.slingV = ropeSlingSpeed(p, vIn);
+      f.slingIn = vIn;
       f.slingX = -wx;
       f.slingZ = -wz;
       // and the whole ring takes the shock: a short canvas thump + camera kick
@@ -5794,7 +5882,8 @@ export class Game {
     d.hitPt = aim === AIM_HEAD ? 1 : 0;
     d.hitSpin = d.hitL * (m.kind === 'side' ? 1.7 : 0.9);
     d.hitSign = Math.abs(d.hitL) > 0.1 ? Math.sign(d.hitL) : Math.random() < 0.5 ? 1 : -1;
-    a.meter = Math.min(100, a.meter + dmg * 1.3 * (!a.isPlayer && this.ultra ? 1.5 : 1)); // ultra: the enemy charges Overdrive faster
+    // THE JAB IS HOW YOU CHARGE (see meterGainFor): measure with the jab, bank the meter, cash it in with R
+    a.meter = Math.min(100, a.meter + meterGainFor(m.id, dmg, !a.isPlayer && this.ultra));
     d.meter = Math.min(100, d.meter + dmg * 0.55);
     if (a.isPlayer && a.meter >= 100 && !this.meterReadyShown) {
       this.meterReadyShown = true;
@@ -5919,8 +6008,11 @@ export class Game {
     } else if (big >= 0.6 || crit || a.runStrike || a.winStrike || a.rage) {
       this.slowT = Math.max(this.slowT, 0.14 + big * 0.11);
       this.slowScale = 0.46;
+    } else if (m.id === 'jab') {
+      // THE JAB DOES NOT SLOW TIME. It is the one punch you are supposed to be able to chain, so it gets PUNCH,
+      // not pause: no slow-mo, no leftover time-scale to drag the next jab down — the snap comes from the hit-stop
+      // above, the white crack below and the sound, and the flurry keeps its own momentum.
     } else {
-      // even a clean jab carries unmistakable 2-ton hydraulic piston weight
       this.slowT = Math.max(this.slowT, 0.065);
       this.slowScale = Math.min(this.slowScale < 1 ? this.slowScale : 1, 0.68);
     }
@@ -5932,6 +6024,15 @@ export class Game {
     this.camImpVel.y -= 1.2 + big * 2.4;
     this.camImpVel.z += away.y * impMag;
     d.flash = 1;
+    // THE JAB SNAP: its own little report, so a flurry of them reads as a machine gun instead of a mush of small
+    // hits — a tight white crack at the point of contact, a thin shock ring, a dry crackle and a short lens kick
+    if (m.id === 'jab') {
+      this.fx.flash(hitPos, 2.4 + big * 2.2, 0xffffff, 0.09);
+      this.fx.ring(hitPos.x, hitPos.z, 0xeaf4ff, 1.6 + big * 1.2, 0.2, hitPos.y);
+      this.sfx.crackle(0.26 + big * 0.34);
+      this.camBump = Math.max(this.camBump, 0.13 + big * 0.14);
+      if (a.isPlayer) this.fovKick = Math.max(this.fovKick, 1.3);
+    }
     // head shots snap his head back; body shots fold him over the punch (a negative hitUp drops the torso + head)
     d.hitUp = aim === AIM_BODY && !launched ? -(0.36 + big * 0.6) : m.kind === 'up' && !launched ? 0.45 + big * 0.75 : 0;
     d.dash.set(0, 0);

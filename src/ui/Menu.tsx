@@ -251,7 +251,7 @@ const CONTROLS: { title: string; rows: [string[], string][] }[] = [
   {
     title: 'SERANGAN & KOMBO',
     rows: [
-      [['H'], 'Jab cepat pembuka kombo'],
+      [['H'], 'JAB — pukulan tercepat & terpanjang (jangkauan 4,4 m): pembuka kombo, penembus guard, dan pengisi meter Overdrive terbaik. Beruntun 1-1-1-1 makin cepat (sampai +30%)'],
       [['J'], 'Hook samping melengkung'],
       [['K'], 'Uppercut (melontarkan lawan ke udara)'],
       [['L'], 'COUNTER — tangkap serangan lawan tepat waktu & balas lurus otomatis!'],

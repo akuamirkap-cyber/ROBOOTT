@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CAM_MODES, Game, OPPONENTS, loadCamMode, loadDifficulty, loadFootwork, loadIq, type HudState } from './game/Game';
+import { CAM_MODES, Game, GFX_MODES, OPPONENTS, loadCamMode, loadDifficulty, loadFootwork, loadGfxMode, loadIq, type GfxMode, type HudState } from './game/Game';
 import { loadSfxProfile, type SfxProfile } from './game/audio';
 import { Menu } from './ui/Menu';
 import { Hud, TouchControls } from './ui/Hud';
@@ -59,6 +59,13 @@ export default function App() {
   const pickIq = (n: number) => {
     setIqLocal(n);
     gameRef.current?.setIq(n);
+  };
+
+  const [gfxLocal, setGfxLocal] = useState<GfxMode>(loadGfxMode);
+  const gfxNow = hud?.gfxMode ?? gfxLocal; // the game is the source of truth
+  const pickGfx = (m: GfxMode) => {
+    setGfxLocal(m);
+    gameRef.current?.setGfxMode(m);
   };
 
   const [ultra, setUltraState] = useState<boolean>(() => loadDifficulty() === 'ultra');
@@ -147,6 +154,26 @@ export default function App() {
 
   const phase = hud?.phase ?? 'menu';
   const inMatch = phase === 'walk' || phase === 'intro' || phase === 'fight' || phase === 'ko';
+  // the fps chip turns amber below 57 and red below 45, so a dip is visible at a glance
+  const fpsNow = hud?.fps ?? 60;
+  const fpsColor = fpsNow >= 57 ? '#7dffc4' : fpsNow >= 45 ? '#ffd34a' : '#ff7a7a';
+
+  /** the live FPS readout — it doubles as the graphics-mode switch, so the player can always see and steer the cost */
+  const gfxChip = () => (
+    <button
+      onClick={() => {
+        const i = GFX_MODES.findIndex((m) => m.id === gfxNow);
+        pickGfx(GFX_MODES[(i + 1) % GFX_MODES.length].id);
+      }}
+      className="ghost cut-sm pointer-events-auto flex h-9 items-center gap-1.5 px-2.5 font-tech text-[9px] font-bold tracking-[0.16em]"
+      style={{ color: fpsColor }}
+      title={`Grafis: ${GFX_MODES.find((m) => m.id === gfxNow)?.name ?? 'OTOMATIS'} · ${hud?.gfx ?? ''} — klik untuk ganti`}
+    >
+      <span className="font-display text-[13px] leading-none">{Math.round(hud?.fps ?? 60)}</span>
+      <span className="opacity-75">FPS</span>
+      <span className="hidden opacity-60 sm:inline">· {hud?.gfx ?? 'MAKSIMAL'}</span>
+    </button>
+  );
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-black">
@@ -281,6 +308,10 @@ export default function App() {
           onCam={pickCam}
           iq={iqNow}
           onIq={pickIq}
+          gfx={gfxNow}
+          onGfx={pickGfx}
+          fps={hud.fps}
+          tier={hud.gfx}
           onResume={() => game?.togglePause()}
           onMenu={() => {
             game?.togglePause();
@@ -290,9 +321,13 @@ export default function App() {
         />
       )}
 
-      {/* ---------- utility buttons (pause / sound during match) ---------- */}
+      {/* ---------- the live FPS / graphics chip on the lobby screen ---------- */}
+      {phase === 'menu' && <div className="absolute bottom-3 left-3 z-40 flex gap-2">{gfxChip()}</div>}
+
+      {/* ---------- utility buttons (fps / graphics / pause / sound during match) ---------- */}
       {phase !== 'menu' && (
         <div className="absolute right-3 z-30 flex gap-2" style={inMatch ? (touch ? { top: 78 } : { bottom: 12 }) : { top: 12 }}>
+          {gfxChip()}
           {inMatch && (
             <button
               onClick={() => pickCam((camNow + 1) % CAM_MODES.length)}

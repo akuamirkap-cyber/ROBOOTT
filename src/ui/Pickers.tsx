@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { CAM_MODES, FOOTWORK_STEPS, IQ_STEPS, ULTRA_COLOR } from '../game/Game';
+import { CAM_MODES, FOOTWORK_STEPS, GFX_MODES, IQ_STEPS, QUALITY_TIERS, ULTRA_COLOR, type GfxMode } from '../game/Game';
 import { SFX_PROFILES, type SfxProfile } from '../game/audio';
 import { cssVar } from './Emblem';
 
@@ -183,6 +183,73 @@ export function IqPicker({ value, onPick }: { value: number; onPick: (n: number)
         <span className="text-amber-300">⚡</span>
         <span className="truncate">{IQ_SUB[value] ?? ''}</span>
       </div>
+    </div>
+  );
+}
+
+const GFX_COLOR = '#5ee7a0';
+const GFX_DESC: Record<GfxMode, string> = {
+  auto: 'Governor 60 fps: kualitas naik-turun sendiri mengikuti beban GPU',
+  max: 'Semua efek menyala — refleksi lantai, bloom, bayangan 2048, AA 4×',
+  balanced: 'Refleksi kanvas saja, bloom lebih murah, bayangan 1536',
+  performance: 'Tanpa refleksi, AA via FXAA, bayangan 1024 — paling ringan, tetap ber-bloom',
+};
+
+/** the graphics modes: the 60 fps governor, or a tier the player pins by hand */
+export function GfxPicker({ value, onPick, fps, tier }: { value: GfxMode; onPick: (m: GfxMode) => void; fps?: number; tier?: string }) {
+  return (
+    <div>
+      <SectionTitle
+        right={
+          <span className="font-tech text-[9px] tracking-[0.2em]" style={{ color: GFX_COLOR }}>
+            {fps ? `${Math.round(fps)} FPS` : ''}
+            {tier ? ` · ${tier}` : ''}
+          </span>
+        }
+      >
+        GRAFIS &amp; PERFORMA
+      </SectionTitle>
+      <div className="grid grid-cols-4 gap-1.5">
+        {GFX_MODES.map((m, i) => {
+          const on = m.id === value;
+          return (
+            <button
+              key={m.id}
+              onClick={() => onPick(m.id)}
+              className={`tile cut-sm pointer-events-auto relative px-1 py-1.5 text-center ${on ? 'tile-on' : ''}`}
+              style={cssVar('--c', GFX_COLOR)}
+            >
+              <div className="font-display text-[12px] leading-none tracking-wider" style={{ color: on ? GFX_COLOR : '#ffffff' }}>
+                {i + 1}. {m.name}
+              </div>
+              <div className="mx-auto mt-1 flex w-10 gap-0.5">
+                {GFX_MODES.map((_, k) => (
+                  <i key={k} className="block h-[3px] flex-1" style={{ background: k <= i ? (on ? GFX_COLOR : 'rgba(255,255,255,0.55)') : 'rgba(255,255,255,0.14)' }} />
+                ))}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 flex items-center gap-1.5 rounded border border-white/5 bg-white/[0.03] px-2 py-1 font-tech text-[8.5px] tracking-wide text-white/65">
+        <span style={{ color: GFX_COLOR }}>✦</span>
+        <span className="truncate">{GFX_DESC[value]}</span>
+      </div>
+    </div>
+  );
+}
+
+/** the five rungs the picture can run on, top to bottom — purely informational, the game picks the rung itself */
+export function TierLadder({ tier }: { tier?: string }) {
+  return (
+    <div className="mt-1 flex items-center gap-1.5 font-tech text-[8px] tracking-[0.16em] text-white/40">
+      <span>LADDER</span>
+      {QUALITY_TIERS.map((t) => (
+        <span key={t.key} className={t.name === tier ? 'font-bold text-emerald-300' : ''}>
+          {t.name}
+          {t.key !== QUALITY_TIERS[QUALITY_TIERS.length - 1].key ? ' ▸' : ''}
+        </span>
+      ))}
     </div>
   );
 }

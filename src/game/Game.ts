@@ -290,6 +290,12 @@ export interface HudState {
   helmetSkin?: number;
   gloveSkin?: number;
   armorSkin?: number;
+  /** the live frame rate of the last half-second window */
+  fps?: number;
+  /** the quality rung the picture is running on right now ('MAKSIMAL' … 'RINGAN') */
+  gfx?: string;
+  /** the graphics mode the player pinned ('auto' = the 60 fps governor) */
+  gfxMode?: GfxMode;
   stats?: MatchStats; // the fight sheet shown on the result screen
   /** TEAM MATCH (2v2): the second robot on each side */
   team?: {
@@ -946,6 +952,55 @@ const INTRO_T = 3.4; // ROUND card → both machines taunt → 3 · 2 · 1 → F
 const INTRO_TAUNT_AT = 0.45; // when both fighters kick off their pre-fight show-off
 const INTRO_COUNT = [0.95, 1.75, 2.55]; // when the 3 · 2 · 1 cards drop
 
+// ------------------------------------------------------------------ THE GRAPHICS LADDER
+/**
+ * The picture is meant to look like this on purpose, and it is meant to hold 60 every second of the fight. Five
+ * rungs, each one giving up exactly one thing — the hall reflection, the MSAA samples, the render scale, the
+ * shadow map — so the fall from MAKSIMAL to RINGAN is a soft one and every rung still looks like the same show.
+ */
+export interface QualityTier {
+  key: string;
+  name: string;
+  /** the glossy floors: 2 = the canvas AND the hall, 1 = the canvas only, 0 = matte */
+  mirror: 0 | 1 | 2;
+  /** multisample count on the HDR scene target (0 = none — the FXAA in the grade pass still cleans the edges) */
+  samples: number;
+  /** render scale, multiplied onto the device pixel ratio cap */
+  scale: number;
+  /** shadow map size for the key light */
+  shadow: number;
+  /** the cinematic bloom pass on/off... */
+  bloom: boolean;
+  /** ...and the resolution of its mip chain, as a fraction of the frame */
+  bloomScale: number;
+}
+export const QUALITY_TIERS: QualityTier[] = [
+  { key: 'max', name: 'MAKSIMAL', mirror: 2, samples: 4, scale: 1.0, shadow: 2048, bloom: true, bloomScale: 0.5 },
+  { key: 'high', name: 'TINGGI', mirror: 2, samples: 2, scale: 1.0, shadow: 2048, bloom: true, bloomScale: 0.5 },
+  { key: 'balanced', name: 'SEIMBANG', mirror: 1, samples: 2, scale: 1.0, shadow: 1536, bloom: true, bloomScale: 0.34 },
+  { key: 'performance', name: 'KINERJA', mirror: 0, samples: 0, scale: 0.88, shadow: 1024, bloom: true, bloomScale: 0.25 },
+  { key: 'lite', name: 'RINGAN', mirror: 0, samples: 0, scale: 0.72, shadow: 1024, bloom: false, bloomScale: 0.25 },
+];
+
+export type GfxMode = 'auto' | 'max' | 'balanced' | 'performance';
+export const GFX_MODES: { id: GfxMode; name: string; hint: string }[] = [
+  { id: 'auto', name: 'OTOMATIS', hint: '60 fps dipegang otomatis' },
+  { id: 'max', name: 'MAKSIMAL', hint: 'semua efek, paling indah' },
+  { id: 'balanced', name: 'SEIMBANG', hint: 'cantik & ringan' },
+  { id: 'performance', name: 'KINERJA', hint: 'paling lancar' },
+];
+const LS_GFX = 'steel-titans-graphics-v1';
+/** the pinned graphics mode from last time ('auto' = let the governor hold 60 by itself) */
+export const loadGfxMode = (): GfxMode => {
+  try {
+    const v = localStorage.getItem(LS_GFX) as GfxMode | null;
+    return v && GFX_MODES.some((m) => m.id === v) ? v : 'auto';
+  } catch {
+    return 'auto';
+  }
+};
+const gfxTier = (m: GfxMode): number => (m === 'max' ? 0 : m === 'balanced' ? 2 : m === 'performance' ? 3 : 0);
+
 export class Game {
   private container: HTMLElement;
   private renderer: THREE.WebGLRenderer;
@@ -1005,15 +1060,23 @@ export class Game {
   private smoothVelE = new THREE.Vector2();
   private fpsEma = 16;
   private fpsT = 0;
-  private quality = 1.0;
+  private fps = 60; // the measured frame rate of the last sample window (shown on the HUD)
+  private frames = 0; // frames in the window...
+  private longFrames = 0; // ...and how many of them missed the 60 Hz beat
+  private dprCap = 1.5; // the device pixel ratio this screen is allowed to render at (see bootDprCap)
+  private quality = 1.0; // the render scale of the CURRENT tier
   private mirrorsOn = true;
+  private hallMirrorOn = true;
   // THE QUALITY LADDER: the frame budget is a locked 60. Each rung (0 = everything on) trades one thing for speed —
-  // the floor reflections, the multisample count, the render scale — and the governor climbs back up when the
-  // frame time has been solid for a while, never retrying a rung that already failed.
+  // the floor reflections, the multisample count, the render scale, the shadow map — and the governor climbs back up
+  // when the frame time has been solid for a while, never retrying a rung that already failed.
   private qTier = 0;
+  private qAuto = true; // false = the player pinned a tier from the graphics menu
+  private qMode: GfxMode = 'auto';
   private qTierFailed = -1;
   private qSteady = 0;
   private qCooldown = 0;
+  private qWarm = 2.2; // seconds of grace at boot: shader compilation and the first uploads are not the GPU's fault
   private enemyCache = new Map<number, Fighter>();
   private flashAmt = 0;
   private hype = 0;
@@ -1102,21 +1165,28 @@ export class Game {
   constructor(container: HTMLElement, onHud: (h: HudState) => void) {
     this.container = container;
     this.onHud = onHud;
+    this.qMode = loadGfxMode();
+    this.qAuto = this.qMode === 'auto';
 
-    // anti-aliasing lives on the composer's multisampled target (the whole frame goes through the grade pass), so
-    // the default framebuffer stays single-sampled — no second MSAA resolve of the final quad every frame
-    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', stencil: false });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.quality));
+    // anti-aliasing: a light 2× MSAA on the composer's HDR target for the long geometry edges, plus the compact
+    // FXAA inside the grade pass for everything the samples miss. The HDR target is where the frame goes through
+    // the grade, so the default framebuffer stays single-sampled — no second MSAA resolve every frame.
+    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', stencil: false, depth: true });
+    this.dprCap = Game.bootDprCap();
+    this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap; // one 2048 map, plain PCF: half the shadow cost of the soft kernel
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.02;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap; // one map, plain PCF: half the shadow cost of the soft kernel
+    // PBR-NEUTRAL TONE MAP: it keeps the saturation and the hue of the lights (ACES washes the reds and the blues
+    // out into pastels as they brighten) while still rolling the highlights off softly — the reason the arena can
+    // now be pushed much brighter without the picture turning milky.
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
+    this.renderer.toneMappingExposure = 1.08;
     container.appendChild(this.renderer.domElement);
     this.renderer.domElement.style.display = 'block';
 
     const pm = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
-    this.scene.environmentIntensity = 0.34;
+    this.scene.environmentIntensity = 0.46; // metal lives on its reflections: a little more environment = rich, bright steel
 
     this.arena = buildArena(this.scene);
     this.hangar = buildHangar(this.scene);
@@ -1125,11 +1195,25 @@ export class Game {
 
     const w = container.clientWidth || window.innerWidth;
     const h = container.clientHeight || window.innerHeight;
-    const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: 4, depthBuffer: true, stencilBuffer: false });
+    // the first rung is chosen from the hardware (or from the mode the player pinned), so a weak GPU never has to
+    // eat a few seconds of stutter before the governor has worked out how to save it
+    this.applyTier(this.qAuto ? this.bootTier() : gfxTier(this.qMode), true);
+    const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: this.tierCfg().samples, depthBuffer: true, stencilBuffer: false });
     this.composer = new EffectComposer(this.renderer, rt);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.03, 0.2, 2.5);
-    this.bloom.enabled = false;
+    // CINEMATIC BLOOM: every lamp, LED strip and screen now bleeds a soft glow into the dark of the hall. The pass
+    // runs in the HDR buffer before the tone map, so only the things that are genuinely bright (the lenses, the
+    // neon, a hot spark) bloom — and the mip chain is run at a fraction of the frame, so it costs almost nothing.
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.62, 0.7, 0.9);
+    this.bloom.enabled = this.tierCfg().bloom;
+    const baseBloomSize = UnrealBloomPass.prototype.setSize;
+    const bloom = this.bloom;
+    // the bloom pyramid is run at a FRACTION of the render size: the mips only carry the wide glow, so nothing
+    // of value is lost and the pass costs a few tenths of a millisecond even at 1440p
+    this.bloom.setSize = (bw: number, bh: number) => {
+      const k = QUALITY_TIERS[this.qTier].bloomScale;
+      baseBloomSize.call(bloom, Math.max(64, Math.round(bw * k)), Math.max(64, Math.round(bh * k)));
+    };
     this.composer.addPass(this.bloom);
     this.grade = makeGradePass();
     this.composer.addPass(this.grade);
@@ -1231,6 +1315,7 @@ export class Game {
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onBlur);
+    document.addEventListener('visibilitychange', this.onVisible);
 
     (window as unknown as { __game?: Game }).__game = this;
     this.raf = requestAnimationFrame(this.loop);
@@ -1498,6 +1583,7 @@ export class Game {
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onBlur);
+    document.removeEventListener('visibilitychange', this.onVisible);
     this.sfx.stopMusic();
     if (this.menuHero) {
       this.scene.remove(this.menuHero.root);
@@ -2140,6 +2226,11 @@ export class Game {
     this.shiftHeld = false;
   };
 
+  /** coming back from another tab: the clock never counts the time we were away (one huge frameMs would upset the governor) */
+  private onVisible = () => {
+    if (document.visibilityState === 'visible') this.last = performance.now();
+  };
+
   private onEdge(code: string) {
     if (code === 'Escape') {
       this.togglePause();
@@ -2702,63 +2793,169 @@ export class Game {
     const raw = Math.min(0.066, frameMs / 1000);
     this.last = now;
     this.fpsEma += (Math.min(frameMs, 250) - this.fpsEma) * 0.08;
+    // the governor watches for MISSED 60 Hz BEATS, not for an average: a stutter is what the player feels, so a
+    // window in which a quarter of the frames ran long is enough to step a rung down.
     this.fpsT += frameMs / 1000;
-    if (this.fpsT > 1.2) {
+    this.frames++;
+    if (frameMs > 20.5) this.longFrames++;
+    if (this.fpsT >= 0.5) {
+      this.fps = this.frames / Math.max(0.05, this.fpsT);
+      if (this.qWarm > 0) {
+        // the first couple of seconds are not representative: every material in the hall compiles on its first
+        // frame and the arena uploads its textures. Judging the GPU on that would drop a rung for nothing.
+        this.qWarm -= this.fpsT;
+        this.qSteady = 0;
+      } else {
+        this.adaptQuality(this.longFrames / Math.max(1, this.frames));
+      }
       this.fpsT = 0;
-      this.adaptQuality();
+      this.frames = 0;
+      this.longFrames = 0;
     }
     this.step(raw);
   };
 
-  private adaptQuality() {
+  /**
+   * THE 60 FPS GOVERNOR. Called twice a second with the share of frames that missed the beat in that window.
+   * A bad window drops a rung immediately (a soft frame rate is always worse than a softer picture), a good one
+   * slowly climbs back — never onto a rung that already failed on this machine.
+   */
+  private adaptQuality(badFrameShare: number) {
+    if (!this.qAuto) return;
     const ms = this.fpsEma;
-    this.qCooldown = Math.max(0, this.qCooldown - 1.2);
-    if (ms > 19.5) {
-      // dropping frames: step one rung down (and remember the rung we just left could not hold 60)
+    this.qCooldown = Math.max(0, this.qCooldown - 0.5);
+    const last = this.qTier >= QUALITY_TIERS.length - 1;
+    if (badFrameShare > 0.22 || ms > 21.5) {
       this.qSteady = 0;
-      if (this.qCooldown > 0 || this.qTier >= 4) return;
+      if (this.qCooldown > 0 || last) return;
       this.qTierFailed = this.qTier;
       this.applyTier(this.qTier + 1);
-      this.qCooldown = 3.6;
+      // a hard miss (25 fps territory) reacts at once, a marginal one waits a beat before giving anything up
+      this.qCooldown = ms > 27 || badFrameShare > 0.45 ? 1.0 : 2.4;
       return;
     }
-    if (ms < 17.0 && this.qTier > 0 && this.qTier - 1 !== this.qTierFailed) {
-      // a solid 60 for eight seconds: climb one rung back up
-      this.qSteady += 1.2;
-      if (this.qSteady > 8) {
+    if (badFrameShare < 0.05 && ms < 19.2 && this.qTier > 0 && this.qTier - 1 !== this.qTierFailed) {
+      // a genuinely solid 60 for five seconds: climb one rung back up
+      this.qSteady += 0.5;
+      if (this.qSteady >= 5) {
         this.qSteady = 0;
         this.applyTier(this.qTier - 1);
-        this.qCooldown = 6;
+        this.qCooldown = 5;
       }
     } else {
       this.qSteady = 0;
     }
   }
 
-  private applyTier(tier: number) {
-    this.qTier = THREE.MathUtils.clamp(tier, 0, 4);
-    // rung 1: the glossy-floor reflection passes go first
-    const mirrors = this.qTier < 1;
-    if (mirrors !== this.mirrorsOn) {
-      this.mirrorsOn = mirrors;
-      this.arena.setMirrors(mirrors);
+  private applyTier(tier: number, force = false) {
+    const next = THREE.MathUtils.clamp(Math.round(tier), 0, QUALITY_TIERS.length - 1);
+    if (next === this.qTier && !force) return;
+    this.qTier = next;
+    const cfg = this.tierCfg();
+    // 1 · the glossy floors: the canvas sheen first, the hall floor second (it is the bigger, softer one)
+    const canvasMirror = cfg.mirror >= 1;
+    const hallMirror = cfg.mirror >= 2;
+    if (this.arena && (force || canvasMirror !== this.mirrorsOn || hallMirror !== this.hallMirrorOn)) {
+      this.mirrorsOn = canvasMirror;
+      this.hallMirrorOn = hallMirror;
+      this.arena.setMirrors(canvasMirror, hallMirror);
     }
-    // rung 2: 4× → 2× multisampling on the scene target
-    const samples = this.qTier < 2 ? 4 : 2;
-    for (const rt of [this.composer.renderTarget1, this.composer.renderTarget2]) {
-      if (rt.samples !== samples) {
-        rt.samples = samples;
-        rt.dispose();
+    // 2 · the multisample count on the HDR target (the grade pass FXAA covers what is left)
+    if (this.composer) {
+      for (const rt of [this.composer.renderTarget1, this.composer.renderTarget2]) {
+        if (rt.samples !== cfg.samples) {
+          rt.samples = cfg.samples;
+          rt.dispose();
+        }
       }
     }
-    // rungs 3–4: the render scale
-    const q = this.qTier < 3 ? 1.0 : this.qTier < 4 ? 0.85 : 0.7;
-    if (q !== this.quality) {
-      this.quality = q;
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.quality));
-      this.resize();
+    // 3 · the render scale — the single biggest lever there is
+    if (force || cfg.scale !== this.quality) {
+      this.quality = cfg.scale;
+      this.renderer.setPixelRatio(this.pixelRatio());
+      if (this.composer) this.resize();
     }
-    if (this.qTier >= 4) this.bloom.enabled = false;
+    // 4 · the shadow map of the key light
+    if (this.arena) {
+      const sh = this.arena.keyLight.shadow;
+      if (sh.mapSize.x !== cfg.shadow) {
+        sh.mapSize.set(cfg.shadow, cfg.shadow);
+        if (sh.map) {
+          sh.map.dispose();
+          sh.map = null;
+        }
+      }
+    }
+    // 5 · the bloom
+    if (this.bloom) this.bloom.enabled = cfg.bloom;
+  }
+
+  /** the render scale this device is allowed to run at, on top of the current tier */
+  private pixelRatio() {
+    return Math.min(window.devicePixelRatio || 1, this.dprCap) * this.quality;
+  }
+
+  private tierCfg() {
+    return QUALITY_TIERS[this.qTier];
+  }
+
+  /**
+   * A 4K panel at dpr 2 means eight million pixels of HDR with MSAA and post — no GPU holds that at 60. The cap
+   * keeps the frame inside a sane pixel budget (the FXAA and the MSAA share the edge work, so a slightly lower
+   * density is invisible), and every rung of the ladder then scales it further.
+   */
+  static bootDprCap() {
+    try {
+      const dpr = window.devicePixelRatio || 1;
+      const w = window.innerWidth || 1280;
+      const h = window.innerHeight || 720;
+      const budget = 2.9e6; // ≈ 2266 × 1275, the sweet spot for a modern laptop GPU at a locked 60
+      return Math.max(0.75, Math.min(dpr, 2, Math.sqrt(budget / Math.max(1, w * h))));
+    } catch {
+      return 1.5;
+    }
+  }
+
+  /**
+   * WHICH RUNG TO START ON. Reading the GPU string is the only honest way to know before a single frame has been
+   * drawn; software rasterizers go straight to the bottom, phone-class GPUs start low, and the governor takes it
+   * from there in the first second of play.
+   */
+  private bootTier(): number {
+    let gpu = '';
+    try {
+      const gl = this.renderer.getContext();
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      if (ext) gpu = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '').toLowerCase();
+    } catch {
+      /* the string is a privilege, not a right */
+    }
+    if (/swiftshader|llvmpipe|software|basic render|mesa offscreen/.test(gpu)) return 4;
+    if (/mali|adreno|powervr|videocore|vivante|tegra/.test(gpu)) return 3;
+    const cores = navigator.hardwareConcurrency || 4;
+    const px = (window.innerWidth || 1280) * (window.innerHeight || 720) * Math.min(window.devicePixelRatio || 1, 2) ** 2;
+    if (/intel/.test(gpu) && /(hd|uhd|iris|graphics)/.test(gpu)) return px > 3.2e6 ? 2 : 1;
+    if (cores <= 2) return 3;
+    if (cores <= 4 && px > 3.2e6) return 2;
+    // a discrete GPU we can name gets the full rig straight away — everything else starts one rung down and lets
+    // the governor PROMOTE it after five solid seconds, because a first-second stutter is worse than a slightly
+    // softer first second
+    if (/apple m[1-9]|nvidia|geforce|rtx|gtx|radeon|rx ?\d|arc a\d|quadro/.test(gpu)) return 0;
+    return gpu ? 1 : cores > 6 ? 1 : 2;
+  }
+
+  /** the graphics mode the player pinned (auto = the governor), remembered between visits */
+  setGfxMode(m: GfxMode) {
+    this.qMode = m;
+    this.qAuto = m === 'auto';
+    try {
+      localStorage.setItem(LS_GFX, m);
+    } catch {
+      /* ignore */
+    }
+    if (!this.qAuto) this.applyTier(gfxTier(m));
+    else this.applyTier(this.bootTier());
+    this.emitHud(true);
   }
 
   private step(raw: number) {
@@ -6999,7 +7196,9 @@ export class Game {
       cam.lookAt(this.camLook);
     }
     cam.updateProjectionMatrix();
-    this.bloom.strength = 0.038 + this.trauma * 0.045 + this.flashAmt * 0.03;
+    // THE GLOW: the rig breathes a real bloom now, and every heavy blow and every flash pushes it — the lamps
+    // surge with the crowd instead of sitting at a constant, flat brightness
+    this.bloom.strength = 0.58 + this.trauma * 0.3 + this.flashAmt * 0.4;
   }
 
   // ------------------------------------------------------------ popups + hud
@@ -7062,6 +7261,9 @@ export class Game {
       helmetSkin: this.helmetSkin,
       gloveSkin: this.gloveSkin,
       armorSkin: this.armorSkin,
+      fps: this.fps,
+      gfx: this.tierCfg().name,
+      gfxMode: this.qMode,
       team:
         this.teamMode && this.ally && this.enemy2 && this.def2
           ? {

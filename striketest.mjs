@@ -11,7 +11,8 @@
 //   §4  it chains out of your own punches: a landed jab / hook / uppercut opens the cancel that throws it
 //   §5  THE JAB pulls its weight: fastest + longest + cheapest punch, real chip on a guard, and the meter engine
 //   §6  THE ROPES PUSH, THEY DO NOT TELEPORT: every correction is capped per frame, and a rebound can only die out
-import { MOVES, MOVE_EXTRA, UNBLOCKABLE, TELL, sampleKeys, defenceAgainst, jabChainSpeed, meterGainFor, ropeInwardStep, ropeHardStep, ropeSlingSpeed, ropeEnergyDamp } from './.__game.mjs';
+//   §7  EVERYONE'S CHASSIS IS 1.8× THICKER: vitality only — the match-up ratios and the damage numbers are untouched
+import { MOVES, MOVE_EXTRA, UNBLOCKABLE, TELL, sampleKeys, defenceAgainst, jabChainSpeed, meterGainFor, ropeInwardStep, ropeHardStep, ropeSlingSpeed, ropeEnergyDamp, HP_SCALE, hpThick, OPPONENTS, ultraDef } from './.__game.mjs';
 
 let fails = 0;
 const ok = (label, cond, info = '') => {
@@ -150,6 +151,27 @@ console.log('\n§6  the ropes push a body, they never teleport it');
     rally.push(v);
   }
   ok('a rope rally dies out, it does not wind up', rally.every((w, i) => i === 0 || w <= rally[i - 1] + 1e-9), rally.map((w) => f(w)).join(' → ') + ' m/s');
+}
+
+// ========================================================================================= §7 the thicker chassis
+console.log('\n§7  nyawa lebih tebal 1.8x — vitality only, the match-ups are untouched');
+{
+  ok('the scale is exactly 1.8x', HP_SCALE === 1.8, `HP_SCALE ${f(HP_SCALE)}`);
+  ok('the player is built 180 deep', hpThick(100) === 180, `${hpThick(100)} HP (was 100)`);
+  // every Titan is scaled by the same factor, so the roster's pecking order (and the Ultra Hard upgrade, which is
+  // a base x1.4 applied BEFORE the scale) is exactly the balance it was — fights are longer, not different
+  const roster = OPPONENTS.map((o) => o.hp);
+  const thick = roster.map((h) => hpThick(h));
+  const ultra = OPPONENTS.map((o) => hpThick(ultraDef(o).hp));
+  const factor = (b, t) => t / b;
+  ok('every Titan got the same 1.8x', roster.every((b, i) => Math.abs(factor(b, thick[i]) - 1.8) < 0.011), roster.map((b, i) => `${b}→${thick[i]}`).join(' '));
+  ok('Ultra Hard stays proportionally ahead', ultra.every((u, i) => Math.abs(factor(thick[i], u) - 1.4) < 0.011), ultra.map((u, i) => `${thick[i]}→${u}`).join(' '));
+  ok('the roster order is unchanged', thick.every((t, i) => i === 0 || t > thick[i - 1]), thick.join(' < '));
+  // the damage table is NOT touched: thicker vitality means more clean hits land before a KO, which is the point
+  const cross = MOVES.cross.dmg;
+  const hitsOld = Math.ceil(OPPONENTS[OPPONENTS.length - 1].hp / cross);
+  const hitsNew = Math.ceil(hpThick(OPPONENTS[OPPONENTS.length - 1].hp) / cross);
+  ok('a KO takes ~1.8x as many clean strikes', hitsNew >= Math.round(hitsOld * 1.7) && MOVES.jab.dmg === 7 && cross === 11, `${hitsOld} → ${hitsNew} crosses on ${OPPONENTS[OPPONENTS.length - 1].name}`);
 }
 
 console.log(fails === 0 ? '\nCOUNTER STRAIGHT: ALL PASS\n' : `\n${fails} FAILURE(S)\n`);

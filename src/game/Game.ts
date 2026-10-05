@@ -200,6 +200,14 @@ export const OPPONENTS: OpponentDef[] = [
   { name: 'VOLT TITAN', title: 'Raksasa Bertenaga Petir', hp: 135, speed: 3.75, dmg: 1.04, react: 0.84, dodge: 0.66, punish: 0.86, adapt: 1.45, aggro: 0.86, rest: 0.48, tscale: 1.05, scale: 1.2, combo: 4, slam: true, color: '#d6ff2a', style: { main: 0xc2a826, secondary: 0x23262d, accent: 0x111111, glow: 0xd6ff2a } },
   { name: 'OMEGA ZEUS', title: 'Juara Dunia Tak Terkalahkan', hp: 150, speed: 3.95, dmg: 1.08, react: 0.9, dodge: 0.72, punish: 0.92, adapt: 1.7, aggro: 0.9, rest: 0.42, tscale: 1.0, scale: 1.22, combo: 5, slam: true, color: '#c070ff', style: { main: 0x3b2370, secondary: 0x15121f, accent: 0xffc83a, glow: 0xb050ff } },
 ];
+// NYAWA LEBIH TEBAL 1.8×. The chassis of every fighter in the WRC is built on this one scale: the player's 100
+// baseline, the roster numbers above, and the Ultra Hard ×1.4 upgrade all end up 1.8× thicker, so the MATCH-UP
+// ratios are exactly what they were — every fight just lasts longer. Chip damage and the guard teardown are
+// absolute numbers, so the practical effect is that a fight is decided by clean hits more than by a slow grind.
+export const HP_SCALE = 1.8;
+/** the actual vitality a fighter is built with: the base number from the roster, scaled. */
+export const hpThick = (base: number) => Math.round(base * HP_SCALE);
+const PLAYER_HP_BASE = 100; // the player's baseline, scaled with everyone else's below
 
 export type Phase = 'menu' | 'walk' | 'intro' | 'fight' | 'ko' | 'matchEnd';
 /**
@@ -1436,7 +1444,7 @@ export class Game {
     this.warnRing2 = this.warnEl.children[1] as HTMLElement;
     this.warnTag = this.warnEl.children[3] as HTMLElement;
 
-    this.player = this.makeFighter(true, { ...PLAYER_STYLE, helmetSkin: this.helmetSkin, gloveSkin: this.gloveSkin, armorSkin: this.armorSkin }, 1, 100, 1, 1);
+    this.player = this.makeFighter(true, { ...PLAYER_STYLE, helmetSkin: this.helmetSkin, gloveSkin: this.gloveSkin, armorSkin: this.armorSkin }, 1, hpThick(PLAYER_HP_BASE), 1, 1);
     this.prepareEnemy(0);
     this.toMenu();
 
@@ -1518,9 +1526,10 @@ export class Game {
     this.arena.rimRed.color.setHex(this.ultra ? 0xff1a3a : this.def.style.glow);
   }
 
-  /** the opponent's tuning for the current difficulty AND IQ */
+  /** the opponent's tuning for the current difficulty AND IQ — and the 1.8× chassis (see HP_SCALE) */
   private makeDef(idx: number) {
-    return smartDef(this.ultra ? ultraDef(OPPONENTS[idx]) : OPPONENTS[idx], this.iq);
+    const d = smartDef(this.ultra ? ultraDef(OPPONENTS[idx]) : OPPONENTS[idx], this.iq);
+    return { ...d, hp: hpThick(d.hp) };
   }
 
   get iqLevel() {

@@ -6,6 +6,7 @@ import {
   ULTRA_COLOR,
   loadGloveSkin, loadArmorSkin,
   loadHelmetSkin,
+  hpThick,
   smartDef,
   ultraDef,
   type Game,
@@ -1475,7 +1476,7 @@ export function Menu({
 
           {/* Spec line */}
           <div className="aaa-spec">
-            <span><b>HP</b> {def.hp}</span>
+            <span><b>HP</b> {hpThick(def.hp)}</span>
             <i />
             <span><b>COMBO</b> ×{def.combo}</span>
             {def.slam && (

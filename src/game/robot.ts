@@ -979,7 +979,7 @@ export class Robot {
     // The height follows the stride phase directly, so it is a clean sine-like bob, not a reach-limited kink.
     const sw2 = fw.swing * fw.swing;
     // running: the body sinks into each stride (knees absorb the landing) and springs up during the flight phase
-    const walkBob = -0.14 + 0.22 * sw2;
+    const walkBob = -0.17 + 0.25 * sw2; // heavier: the hips sink onto the touch-down and drive up over the stance leg
     const baseHd = clamp(STAND_Y - a.dip * 1.15, 1.6 + UP * 0.6, 3.42 + UP);
     // running: the knees stay bent; the hips are lowest in mid-stance and rise gently towards touch-down / toe-off / flight.
     // `depth` is a smooth sine of the stance progress, so the bob is a clean ~6% wave (the old version spiked by 25%).
@@ -1199,12 +1199,15 @@ export class Robot {
       const swayA = Math.sin(t * 5.2 + i) * 0.025;
       // contralateral arm swing while walking (only when the arm is in its guard, so punches stay clean)
       const guardK = clamp((p.sx + 1.2) / 0.5, 0, 1);
-      // walking: a light counter-swing; sprinting: big pumping arms (the run pose keeps the elbows bent at ~100°)
-      const swing = lerp(0.11, 0.95, rw) * s * armW * guardK;
+      // Walking: the arm is carried, not hung — the shoulder drives it and the fist rides a touch higher as it comes
+      // forward, so the swing reads as weight moving through him. Sprinting: big pumping arms (elbows bent ~100°).
+      const swing = lerp(0.2, 0.95, rw) * s * armW * guardK;
+      const drive = clamp(-s * armW * guardK, 0, 1); // how far forward this arm is in the stride
+      const elbowDrive = -lerp(0.14, 0, rw) * drive; // ...the hand comes up on the forward half of the swing
       // the guard is knocked about by the blow: the arm on the side the fist lands on swings out, the other braces
-      const flail = hMag * 0.24 * (0.35 + 0.65 * clamp(s * hL, 0, 1)) * (0.4 + hPt * 0.6);
+      const flail = hMag * 0.1 * (0.35 + 0.65 * clamp(s * hL, 0, 1)) * (0.4 + hPt * 0.6);
       this.shoulders[i].rotation.set(p.sx + swayA + lagX + swing - flail * 0.5, p.sy * s, (p.sz + flail) * s);
-      const ex = Math.min(0.02, p.ex);
+      const ex = Math.min(0.02, p.ex + elbowDrive);
       this.elbows[i].rotation.x = ex;
       // wrist whips with forearm angular speed (follow-through)
       let target = 0;
@@ -1238,8 +1241,12 @@ export class Robot {
 
       // FK pose used in the air / when knocked down
       const flail = Math.sin(t * 4.2 + i * Math.PI) * 0.13; // a slow drift of dead-weight legs, not a flap
-      const airHx = (i === 0 ? -0.65 : 0.25) + flail;
-      const airKx = (i === 0 ? 0.95 : 0.45) + flail * 0.5;
+      const am = this.airW;
+      const flipTuck = clamp(a.tuck ?? 0, 0, 1) * am; // the flip: both knees up, both heels under the hips
+      // A front flip is written with BOTH legs: as the knees come up, the dead-weight flail folds away with them, so
+      // what the eye reads is one body turning over its own centre — never two legs doing their own thing mid-air.
+      const airHx = lerp((i === 0 ? -0.65 : 0.25) + flail, -0.18 + flail * 0.35, flipTuck);
+      const airKx = lerp((i === 0 ? 0.95 : 0.45) + flail * 0.5, 1.02 + flail * 0.35, flipTuck);
       // LYING LIMP: the pelvis is pitched back almost 90°, so the legs have to be near-zero in this frame to
       // actually lie ON the mat. A bent knee here hangs the boot under the canvas, and the floor solver is then
       // left choosing between a boot through the mat and a body floating a metre above it.
@@ -1247,7 +1254,6 @@ export class Robot {
       const lieW = fs.side * (1 - rs.tuck) * (1 - rs.legs);
       const fallHx = 0.02 * s - (0.7 * lieLead + 0.14 * (1 - lieLead)) * lieW;
       const fallKx = 0.1 + (0.95 * lieLead + 0.22 * (1 - lieLead)) * lieW;
-      const am = this.airW;
       // GET-UP: the legs are the load-bearing part of the whole move, and they are posed here by hand (the IK
       // does not get them back until he drives up out of the crouch). The LEAD leg — the one on the side he rolls
       // towards — folds hard, knee up over the boot, and stays under him; the TRAIL leg draws in behind it, its
@@ -1258,7 +1264,6 @@ export class Robot {
       const lead = riseDir > 0 ? 0 : 1;
       const leadW = i === lead ? 1 : 0;
       const trailW = 1 - leadW;
-      const flipTuck = clamp(a.tuck ?? 0, 0, 1) * am; // the flip: both knees up, both heels under the hips
       const fkHx = lerp(fallHx, airHx, am) - 1.25 * leadW * tuckW - 0.3 * leadW * kneelW + 0.4 * trailW * kneelW - (1.75 + airHx) * flipTuck;
       const fkKx = lerp(fallKx, airKx, am) + 2.0 * leadW * tuckW + 1.6 * trailW * tuckW + (2.25 - airKx) * flipTuck;
       const fkHz = lerp(s * 0.12, s * 0.2, am) + s * 0.34 * tuckW;

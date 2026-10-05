@@ -224,13 +224,39 @@ interface WalkTrack {
   cue: number; // how many of the strut's crowd cues have fired
   landed: boolean;
   raised: boolean;
-  apex: boolean;
   inward: THREE.Vector2;
   perp: THREE.Vector2;
 }
 const WALK_T = 9.4;
 const FLIGHT_H = 4.5; // how high the centre of mass rises above the straight line take-off → landing
 const COM_H = 3.5; // centre of mass above the feet (× scale): the flip pivots here
+/**
+ * FRONT FLIP — how much of the turn is done at flight progress p (0 → 1 gives 0 → 1; × 2π is the flip angle).
+ * A real tucked front flip is not an ease-in-ease-out: nothing turns while the legs are still driving the wedge,
+ * then the shoulders whip over and the turn rate CLIMBS through the first sixth of the flight (the body extends,
+ * then snaps into the tuck), holds its fastest through the middle — compact, knees on the chest — and only sheds
+ * speed at the end as the body opens and the feet reach down for the canvas. He is still turning when the boots
+ * land: the last of the rotation is what the knees and the crouch absorb. `tuck` is cut from the same curve.
+ */
+const FLIP_RAMP = 0.16; // share of the flight the turn rate takes to reach full speed (the opening of the body)
+const FLIP_HOLD = 0.6; // share of the flight the turn rate stays at its peak (the tuck)
+const FLIP_END = 0.55; // share of the peak rate still left at touch-down (the rotation the landing absorbs)
+const FLIP_NORM = 1 / (FLIP_RAMP * 0.5 + (FLIP_HOLD - FLIP_RAMP) + (1 - FLIP_HOLD) * (1 - (1 - FLIP_END) / 3));
+const flipTurn = (p: number) => {
+  if (p <= 0) return 0;
+  if (p >= 1) return 1;
+  if (p < FLIP_RAMP) {
+    const s = p / FLIP_RAMP;
+    return FLIP_RAMP * (s * s * s - s * s * s * s * 0.5) * FLIP_NORM;
+  }
+  if (p < FLIP_HOLD) return (FLIP_RAMP * 0.5 + (p - FLIP_RAMP)) * FLIP_NORM;
+  // opening out: the turn rate falls off smoothly (no step in the rate = no hitch in the rotation) from full speed
+  // down to FLIP_END of it, which is exactly what untucking does — mass out at the ends, rotation slows for landing
+  const q = (p - FLIP_HOLD) / (1 - FLIP_HOLD);
+  return (FLIP_RAMP * 0.5 + (FLIP_HOLD - FLIP_RAMP) + (1 - FLIP_HOLD) * (q - (1 - FLIP_END) * q * q * q / 3)) * FLIP_NORM;
+};
+const FLIP_IN = 0.07; // the turn starts once the boots have left the wedge (the push-off rides the wedge)
+const FLIP_SPAN = 1 - FLIP_IN; // ...and it is complete exactly as the boots reach the canvas
 /** how far the walkways slide out when the ring is bigger (TEAM MATCH) — see arena.ts setRingScale */
 const entryShift = () => (RING_IN / RING_IN_BASE - 1) * 15.5;
 /** height of the entrance runway under a point at radius r from the ring centre (see arena.ts buildEntrance) */
@@ -364,7 +390,9 @@ function createCinematicVignetteTexture(): THREE.CanvasTexture {
 
 const GUARD: Pose = { sx: -0.72, sy: -0.5, sz: 0.04, ex: -2.0 };
 const BLOCK: Pose = { sx: -1.0, sy: -0.75, sz: 0, ex: -2.2 };
-const STAGGER: Pose = { sx: -0.25, sy: -0.2, sz: 0.55, ex: -0.7 };
+// dazed, but still a fighter: the hands stay half up in front of the chest (elbows folded) — an arm thrown wide
+// open is a man who has given up on his guard, and he never has
+const STAGGER: Pose = { sx: -0.42, sy: -0.34, sz: 0.34, ex: -1.15 };
 const LIMP: Pose = { sx: 0.1, sy: 0, sz: 0.35, ex: -0.25 };
 const TAUNT: Pose = { sx: -0.3, sy: -0.1, sz: 1.3, ex: -2.3 };
 const VICTORY: Pose = { sx: -3.0, sy: 0, sz: 0.5, ex: -0.3 };
@@ -374,6 +402,8 @@ const k = (t: number, p: Pose, twist = 0, lean = 0.08, lunge = 0, dip = 0.12, e:
 const P = (sx: number, sy: number, sz: number, ex: number): Pose => ({ sx, sy, sz, ex });
 /** sprint arm pose: elbows bent ~100°, fists driving beside the ribs (the robot adds the pumping swing on top) */
 const RUNARM = P(-0.45, -0.2, 0.06, -1.75);
+/** the stance he WALKS on: the fight guard carried with him — fists up at the jaw, elbows tucked over the ribs */
+const WALKG = P(-0.7, -0.62, 0.03, -2.2);
 
 const MOVES: Record<MoveId, Move> = {
   // Every strike is built as: COIL (pull the whole body back the other way) → RELEASE (whip everything through
@@ -2452,7 +2482,6 @@ export class Game {
         cue: 0,
         landed: false,
         raised: false,
-        apex: false,
         inward: out.clone().negate(),
         perp,
       });
@@ -2498,12 +2527,14 @@ export class Game {
       out.u = u;
     } else if (t < t3) {
       // THE FLIGHT: a straight line for the feet-track, a parabola on top for the centre of mass, and a full
-      // tucked front flip in the middle of it (the pivot is the centre of mass — see animateFighter)
+      // tucked front flip in the middle of it (the pivot is the centre of mass — see animateFighter). The turn
+      // rides the real flip curve (flipTurn): it starts once the boots leave the wedge, whips up as he tucks,
+      // holds through the middle and only slows as he opens out — he is still finishing the turn as he lands.
       const u = (t - t2) / (t3 - t2);
       out.pos.lerpVectors(w.take, w.land, u);
       out.y = THREE.MathUtils.lerp(rampY(w.take.length()), 0, u) + FLIGHT_H * 4 * u * (1 - u);
-      const fu = THREE.MathUtils.clamp((u - 0.07) / 0.83, 0, 1);
-      out.flip = Math.PI * 2 * fu * fu * (3 - 2 * fu); // one smooth turn: eases in, steady through the top, eases out
+      const fu = THREE.MathUtils.clamp((u - FLIP_IN) / FLIP_SPAN, 0, 1);
+      out.flip = Math.PI * 2 * flipTurn(fu);
       out.beat = 3;
       out.u = u;
     } else if (t < t4) {
@@ -2608,17 +2639,12 @@ export class Game {
             this.trauma = Math.min(1, this.trauma + 0.22);
           }
         }
-        // the apex: a beat of slow motion so the flip reads, then it drops out of the sky at full speed
-        if (f.isPlayer && cur.u > 0.36 && !w.apex) {
-          w.apex = true;
-          this.slowScale = 0.5;
-          this.slowT = 0.26;
-        }
-        // the tuck follows the rotation: knees come up as the turn speeds up, open out as it slows, and the legs
-        // reach down for the canvas on the last part of the descent
-        const fu = THREE.MathUtils.clamp((cur.u - 0.07) / 0.83, 0, 1);
+        // the tuck follows the rotation: the knees come up as the turn whips and open out as it sheds speed —
+        // one curve, so the shape of the body and the rate of the turn are the same thing (no floaty apex here,
+        // the only slow motion in the entrance is the beat the landing takes)
+        const fu = THREE.MathUtils.clamp((cur.u - FLIP_IN) / FLIP_SPAN, 0, 1);
         const sm = (a: number, b: number) => THREE.MathUtils.smoothstep(fu, a, b);
-        f.pkTuck = Math.max(0.12, sm(0, 0.28) * (1 - sm(0.68, 0.96)));
+        f.pkTuck = Math.max(0.14, sm(0.0, 0.2) * (1 - sm(0.6, 0.96)));
       } else {
         if (f.state === 'air') f.state = 'idle';
         f.pkTuck += (0 - f.pkTuck) * (1 - Math.exp(-12 * dt));
@@ -6180,7 +6206,9 @@ export class Game {
       // the superhero landing, boxer's cut: BOTH fists driven straight down into the canvas either side of the
       // knees, arms locked, shoulders square, head down then up — one symmetric, planted, menacing shape
       const landFist = P(-0.58, -0.06, 0.34, -0.1);
-      const open = P(-1.5, 0.1, 1.15, -0.5); // the arms fly open as he comes out of the tuck
+      // out of the tuck the arms swing up and down FORWARD, in front of the body, and reach ahead of him to spot
+      // the canvas — the hands never fly out to the sides (that is the shape that reads as flailing, not flipping)
+      const open = P(-1.85, -0.12, 0.42, -0.95);
       const inAir = f.state === 'air' ? 1 : 0;
       const from = f.sprinting ? RUNARM : GUARD; // the load grows out of the running arm swing, not out of the guard
       const base0 = lerpPose(lerpPose(lerpPose(from, loadA, pre), open, Math.min(1, (1 - tk) * 1.4) * inAir), tuckA, tk);
@@ -6321,10 +6349,11 @@ export class Game {
       rl = fb.rl;
       kk = fb.kk;
     } else if (f.swagger !== 0 && this.phase === 'walk') {
-      // THE STRUT (ring walk). Everything here hangs on the LIVE STRIDE (robot.stride): the arms swing loose and big
-      // against the legs, the elbow folds as the arm comes forward and opens as it goes back, the shoulders roll
-      // against the hips, the weight drops onto each stance leg — so the body never stands still while the legs
-      // walk. The show is scripted on the strut's progress `sw` and layered ON TOP of that swing, each moment
+      // THE STRUT (ring walk). Everything here hangs on the LIVE STRIDE (robot.stride): the fists stay up where a
+      // fighter carries them and the shoulder drives the arm against the leg (the elbow folds as it comes forward,
+      // opens as it goes back), the shoulders roll against the hips, the weight drops onto each stance leg — so the
+      // body never stands still while the legs walk, and never reads as a machine out for a stroll either.
+      // The show is scripted on the strut's progress `sw` and layered ON TOP of that swing, each moment
       // overlapping the next: arms raised at the gate → arms open low to the crowd → the left fist pumped high at the
       // stands (still pumping with the step, head turned to that side) → the right → a double chest pound →
       // a point straight at the ring → the arms drop into the running swing.
@@ -6334,14 +6363,16 @@ export class Game {
       const st = (a: number, b: number) => THREE.MathUtils.smoothstep(sw, a, b);
       const fwdL = Math.max(0, -g); // the left arm is forward
       const fwdR = Math.max(0, g);
-      const armL = P(-0.3 + g * 0.6, 0.08, 0.46, -0.78 - fwdL * 0.55 + fwdR * 0.22);
-      const armR = P(-0.3 - g * 0.6, 0.08, 0.46, -0.78 - fwdR * 0.55 + fwdL * 0.22);
-      const bothUp = P(-2.8 - gs * 0.08, -0.1, 0.55, -0.4);
-      const pumpL = P(-2.72 + g * 0.2, -0.14, 0.42, -0.5 + fwdR * 0.12);
-      const pumpR = P(-2.72 - g * 0.2, -0.14, 0.42, -0.5 + fwdL * 0.12);
+      const armL = P(-0.78 + g * 0.42, -0.2, 0.2, -1.6 - fwdL * 0.4 + fwdR * 0.16);
+      const armR = P(-0.78 - g * 0.42, -0.2, 0.2, -1.6 - fwdR * 0.4 + fwdL * 0.16);
+      // the crowd beats are the same beats, delivered like a fighter: the fist goes up with the elbow still folded,
+      // the arms stay close to the body and the salute stays a salute — nothing here is a straight-armed wave
+      const bothUp = P(-2.5 - gs * 0.06, -0.14, 0.4, -0.85);
+      const pumpL = P(-2.52 + g * 0.18, -0.16, 0.34, -0.95 + fwdR * 0.12);
+      const pumpR = P(-2.52 - g * 0.18, -0.16, 0.34, -0.95 + fwdL * 0.12);
       const pound = P(-0.1, -1.0, -0.85, -1.9);
-      const poundOpen = P(-1.6, -0.5, 1.2, -2.0);
-      const point = P(-1.62 - g * 0.05, -0.15, 0.15, -0.1);
+      const poundOpen = P(-1.35, -0.62, 0.85, -2.1);
+      const point = P(-1.62 - g * 0.05, -0.15, 0.15, -0.35);
       const gateUp = st(-1, -0.45) * (1 - st(0.0, 0.17)); // up at the gate, down into the swing as he walks
       const wL = st(0.18, 0.28) * (1 - st(0.38, 0.47));
       const wR = st(0.44, 0.54) * (1 - st(0.62, 0.71));
@@ -6363,8 +6394,9 @@ export class Game {
       // chest out, shoulders rolling against the hips with every step, the weight dropping onto each stance leg
       tw = (-g * 0.26 + (wL - wR) * 0.2 - wPt * 0.14) * show;
       rl = (g * 0.085 + (wL - wR) * 0.05) * show;
-      ln = lerp(-0.12 - gateUp * 0.06 + thump * 0.25 + wPt * 0.1, 0.16, toRun);
-      dp = lerp(0.1 + gs * gs * 0.05 + thump * 0.12, 0.2, toRun);
+      // chin down and a low, wide, planted stance: he walks the runway like he owns the ring, not like a parade
+      ln = lerp(0.03 - gateUp * 0.05 + thump * 0.2 + wPt * 0.06, 0.16, toRun);
+      dp = lerp(0.19 + gs * gs * 0.05 + thump * 0.1, 0.2, toRun);
       kk = 24 + thump * 40;
       f.headYaw = ((wL - wR) * 0.85 - wPt * 0.12) * show; // he looks at the stands he is playing to
     } else if (f.riseOut > 0 && !f.blocking) {
@@ -6412,12 +6444,18 @@ export class Game {
       // idle guard with subtle bouncing
       // Time-based wobble only while standing. While walking, the bob / arm swing / pelvis roll all come from
       // the stride itself (robot.ts), so they stay in sync with the footsteps instead of fighting them.
-      const wk = Math.min(1, f.speed / 3.5);
+      // A FIGHTER'S WALK, not a stroll: the moment he is moving on his feet the fists come up to the jaw, the
+      // elbows tuck in over the ribs and the chest drops over the hips — the stance he fights from, carried with
+      // him. The weight of the stride comes from under him (robot.ts drives the pelvis sink, the toe roll and the
+      // footfalls straight out of the steps), so the arms never have to swing loose to sell the walk.
+      const wk = THREE.MathUtils.clamp(f.speed / 3.5, 0, 1);
       const idle = 1 - wk;
+      const stalk = wk * wk * (3 - 2 * wk);
       const sw = Math.sin(t * 4) * 0.06 * idle;
-      a0 = { ...GUARD, sx: GUARD.sx + sw };
-      a1 = { ...GUARD, sx: GUARD.sx - sw };
-      dp = 0.15 + wk * 0.02 + Math.sin(t * 5.2) * 0.035 * idle;
+      a0 = lerpPose({ ...GUARD, sx: GUARD.sx + sw }, WALKG, stalk);
+      a1 = lerpPose({ ...GUARD, sx: GUARD.sx - sw }, WALKG, stalk);
+      ln = lerp(ln, 0.1 + stalk * 0.05, stalk); // chin down, chest over the hips: he walks INTO the fight
+      dp = 0.15 + stalk * 0.08 + Math.sin(t * 5.2) * 0.035 * idle; // a lower, springier stance than standing
       rl = Math.sin(t * 2.6) * 0.03 * idle;
       // sprinting: elbows bent and driving, torso leaning into the run (only when actually sprinting, so W/A/S/D boxing footwork keeps the guard up!)
       const ru = f.sprinting ? THREE.MathUtils.clamp((f.speed / f.scale - 6.4) / 3.2, 0, 1) : 0;
@@ -6433,8 +6471,10 @@ export class Game {
     // ---------------- HIT REACTION LAYER ----------------
     // A landed punch must read as a punch that LANDED — never as a guard that just did not work. So while the hit
     // impulse is live the arms leave the guard entirely and react to WHERE the fist went in:
-    //  • head shot → the guard is blown open: the arm on the side he is thrown towards whips up and out, the other
-    //    one drops away from the face; an uppercut throws both arms higher and the torso back;
+    //  • head shot → the guard is blown open: the arm on the side he is thrown towards whips up ACROSS the face —
+    //    elbow folded, hand still between the fist and his chin — while the other one stays tucked in tight; an
+    //    uppercut throws both arms higher and the torso back. Broken open, yes; thrown wide like a man who has
+    //    stopped defending himself, never — that is what an arm spread out to the side reads as;
     //  • body shot → he folds over the fist: both forearms clamp across the stomach, shoulders in, torso bent.
     // The weight comes from the smoothed hit impulse (instant snap, ~0.4 s relax) so it transitions on its own into
     // the stagger wobble / the guard coming back up. A punch that is actually BLOCKED never gets here.
@@ -6443,10 +6483,10 @@ export class Game {
     if (wF > 0.01) {
       const up = Math.max(0, f.hitUpV);
       const bodyK = THREE.MathUtils.clamp(1 - f.hitPt + Math.max(0, -f.hitUpV) * 0.7, 0, 1);
-      const openNear = P(-1.45 - up * 0.55, 0.3, 1.2 + up * 0.25, -0.7);
-      const openFar = P(-0.4 + up * 0.1, 0.05, 0.62, -1.2);
+      const openNear = P(-1.5 - up * 0.3, 0.02, 0.55 + up * 0.12, -1.55);
+      const openFar = P(-0.42 + up * 0.08, -0.12, 0.24, -1.85);
       const clutch = P(-0.55, -0.62, -0.14, -2.0);
-      const nearIs0 = f.hitSign > 0; // thrown towards his left → the left arm (index 0) is the one flung out
+      const nearIs0 = f.hitSign > 0; // thrown towards his left → the left arm (index 0) is the one that whips up
       const r0 = lerpPose(nearIs0 ? openNear : openFar, clutch, bodyK);
       const r1 = lerpPose(nearIs0 ? openFar : openNear, clutch, bodyK);
       a0 = lerpPose(a0, r0, wF);

@@ -580,7 +580,7 @@ const MOVE_EXTRA: Record<MoveId, { width: number; launch: boolean; unblock: bool
 // ------------------------------------------------------------------ THE VS FIST CLASH
 /**
  * THE FIST CLASH ON THE VS SCREEN. In the last two seconds of the lock-in count both machines throw a full-power
- * straight at each other and lock fists in the middle of the frame — an Overdrive-weight collision, not a tap.
+ * right hand at each other and lock fists in the middle of the frame — an Overdrive-weight collision, not a tap.
  *
  * BOTH MACHINES THROW THEIR RIGHT HAND. On this rig arm index 1 is the right one: the model is built facing +z
  * (its boots sit heel −z, toe +z), so at yaw 0 the right-hand side is −x — and that is exactly where arm 1 hangs
@@ -589,48 +589,70 @@ const MOVE_EXTRA: Record<MoveId, { width: number; launch: boolean; unblock: bool
  * punch — a real cross — while the opponent, standing on the right, throws the same right hand straight down the
  * line.
  *
- * BOTH TRACKS LOAD THE FIST FIRST: the coil starts while the "3" is still on screen and is at full depth exactly as
- * the "2" lands, and it is HELD there for the rest of the count. The throw itself is then released on the "1" — the
- * fists meet at VS_CLASH_AT_HIT = 2.00 s into the 3 s count, with the transition already covering the cut.
+ * THE FISTS MEET IN THE MIDDLE AND NEVER CROSS IT. This is the whole trick of the pose, and it is measured, not
+ * eyeballed: each glove stops on ITS OWN side of the centre line (clashtest.mjs §2 walks every vertex of both glove
+ * meshes on every frame). An earlier version had both fists swing THROUGH the middle — each glove ended up over the
+ * opponent's half of the frame, so the two machines read as swapping arms and the meshes had to be threaded past
+ * each other with millimetres to spare. Stopping each knuckle just short of the centre line is what makes the pose
+ * read as a clash, and it is also what makes it physically safe: the closest pair of vertices is the two knuckles,
+ * touching across the middle.
  *
- * The two meet WITHOUT THE GLOVES TOUCHING THROUGH EACH OTHER. The gloves are 1.3 m across, so the shapes matter:
- * the first fist is thrown out EARLY and then parked, and only then is the cross released into it, so neither track
- * ever sweeps a glove through the space the other one is standing in. clashtest.mjs §2 measures the exact
- * surface-to-surface distance between the two glove meshes, per vertex, on every frame of the clash: the gloves must
- * meet (5-20 cm of air at the hit) and the minimum over the whole clip must stay above 3 cm — no interpenetration.
+ * THE TRACK IS ALIVE, NOT A HELD PHOTOGRAPH. Both machines are fully loaded exactly as the "2" lands (the deepest
+ * point of the coil), and they stay loaded right through the count — but the hold is not a still frame: a procedural
+ * layer (see `clashStateFrom`) keeps pressing and pulling against the load, sinking a hair, trembling on the servos,
+ * and the torso keeps winding. After the hit the same layer flips into the grind: the two machines surge against
+ * each other, glove to glove, until the transition covers the shot.
+ *
+ * AND THE WHOLE MACHINE THROWS, NOT JUST THE ARM: weight goes forward (lunge), the rear foot re-plants on the
+ * release (punchFoot), the chest unwinds through the punch (twist), the head tracks the opponent (head), and the
+ * optics charge all the way through the coil and BLOW OUT on the exact frame the knuckles meet (strike → 1).
  */
 export const VS_CLASH_AT = 0.45; // s into the 3-second lock-in count: the coil STARTS here ("3" is on screen)
 export const VS_CLASH_HIT = 1.55; // the frame the fists meet (1.55 + 0.45 = 2.00 s = exactly the "1")
 export const VS_CLASH_AT_HIT = VS_CLASH_AT + VS_CLASH_HIT; // → 2.00 s
 export const VS_CLASH_DUR = 2.05; // the whole clash; past the hit the lock is HELD until the transition covers it
-/** the straight right: the opponent's track (and the shape of the throw both machines share). */
+export const VS_CLASH_REL = 1.25; // s: the throw is released here — 0.30 s of travel into the lock-out
+// HOW FAR EACH MACHINE TURNS to square up on its opponent as it loads (rad). They are not equal: the player throws
+// a cross, which already carries his chest around, while the opponent throws a straight — these two numbers are the
+// measured pair that leaves BOTH chests facing the other machine (clashtest.mjs §2 measures the facing angle).
+export const VS_CLASH_SQUARE_HERO = 0.86;
+export const VS_CLASH_SQUARE_FOE = 0.55;
+/** the opponent's straight right: the shape of the throw both machines share. */
 export const VS_CLASH_KEYS: Key[] = [
-  //         shoulder pitch / yaw / roll / elbow          twist   lean   lunge  dip    ease
-  k(0.00, P(-0.40, -0.30, 0.30, -2.30), 0.42, 0.02, 0, 0.16, 'io'), // the fist starts coming back
-  k(0.30, P(-0.22, -0.42, 0.36, -2.42), 0.54, 0.00, 0, 0.21, 'io'), // the coil is loading
-  k(0.55, P(-0.12, -0.50, 0.42, -2.50), 0.60, -0.04, 0, 0.24, 'io'), // FULLY LOADED exactly as the "2" lands
-  k(1.05, P(-0.15, -0.49, 0.42, -2.49), 0.58, -0.03, 0, 0.23, 'io'), // ...and HELD there, straining, through the "2"
-  // THE STRAIGHT: the exact shape of the Overdrive straight's throw (same 'in' ease, same locked-out elbow), thrown
-  // EARLY so it has parked on the contact patch before the player's cross arrives — measured: the two tracks only
-  // stop passing through each other once the fist that lands first is already held out (clashtest.mjs §2).
-  k(1.33, P(-1.86, 0.34, 0.30, -0.06), -0.34, 0.30, 0, 0.15, 'in'),
-  k(1.55, P(-1.86, 0.34, 0.30, -0.06), -0.34, 0.30, 0, 0.15, 'io'), // servo to servo: it does not give an inch
-  k(2.05, P(-1.86, 0.34, 0.30, -0.06), -0.34, 0.30, 0, 0.15, 'io'),
+  //         shoulder pitch / yaw / roll / elbow          twist   lean    lunge   dip    ease
+  k(0.00, P(-0.55, -0.30, 0.30, -2.20), -0.06, -0.06, -0.04, 0.17, 'io'), // the fist cocks back, the body sinks
+  k(0.30, P(-0.34, -0.42, 0.38, -2.44), -0.10, -0.16, -0.08, 0.22, 'io'), // the weight rolls onto the back foot
+  k(0.55, P(-0.24, -0.50, 0.42, -2.50), -0.12, -0.22, -0.10, 0.26, 'io'), // FULLY LOADED exactly as the "2" lands
+  k(1.05, P(-0.26, -0.49, 0.42, -2.49), -0.11, -0.20, -0.08, 0.25, 'io'), // ...and HELD, straining, through the "2"
+  // THE OPPONENT'S RIGHT HAND — the hand facing the middle, and the one that lands the "1". He holds the load a
+  // beat longer than the player and then fires the straight in one burst, so the two fists are never in the same
+  // volume on the way out: the player is already parked on the patch and he closes the last half metre into it.
+  k(1.30, P(-0.28, -0.50, 0.44, -2.51), -0.12, -0.24, -0.09, 0.27, 'io'), // ...the very last sink
+  k(1.55, P(-1.65, 0.60, 0.30, -0.12), 0.62, 0.34, 0.34, 0.16, 'in'), // THE STRAIGHT LANDS on the "1"
+  k(1.77, P(-1.65, 0.60, 0.30, -0.12), 0.62, 0.34, 0.46, 0.16, 'io'), // the push — he drives INTO the lock...
+  k(2.05, P(-1.65, 0.60, 0.30, -0.12), 0.62, 0.34, 0.44, 0.16, 'io'), // ...and holds it until the shot is covered
 ];
-/** the player's track: the same right hand, thrown ACROSS the chest (a cross), because his right shoulder is the
- *  far one from the middle. The torso turns into it (twist → 1.06) and the shoulder rolls level (sy → 0).
- *  He is coiled for a full second of the count — loaded well before the "2" — and only fires at the "1". */
+/** the player's track. He throws the SAME cross the fight ships, but here it is the right hand, across his own
+ *  chest — and both machines LOAD FOR A FULL SECOND before the "1": the coil is already at full depth when the "2"
+ *  lands, and it is held there (with the body straining against it) until the release.
+ *  The three lock-out keys are IDENTICAL in every channel on purpose: past the hit the two machines push against
+ *  each other instead of the pose drifting — the live press comes from the procedural layer in clashStateFrom. */
 export const VS_CLASH_KEYS_CROSS: Key[] = [
-  k(0.00, P(-0.42, -0.26, 0.32, -2.28), 0.50, 0.02, 0, 0.17, 'io'),
-  k(0.30, P(-0.30, -0.20, 0.40, -2.40), 0.72, 0.00, 0, 0.22, 'io'),
-  k(0.55, P(-0.24, -0.16, 0.46, -2.46), 0.84, -0.05, 0, 0.25, 'io'), // FULLY LOADED exactly as the "2" lands
-  k(1.33, P(-0.27, -0.18, 0.46, -2.45), 0.82, -0.04, 0, 0.24, 'io'), // held, straining, until the opponent's fist
-  // is parked — then the cross is released into it (the throw itself is 0.22 s: Overdrive weight, clashtest §1)
-  k(1.55, P(-1.80, 0.00, 0.34, -0.10), 1.06, 0.26, 0, 0.17, 'in'), // THE CROSS LANDS on the "1"
-  k(1.77, P(-1.80, 0.00, 0.34, -0.10), 1.06, 0.26, 0, 0.17, 'io'), // the lock HOLDS, glove to glove, until the
-  k(2.05, P(-1.80, 0.00, 0.34, -0.10), 1.06, 0.26, 0, 0.17, 'io'), // transition covers the shot
+  k(0.00, P(-0.55, -0.26, 0.32, -2.20), -0.05, -0.06, -0.04, 0.17, 'io'),
+  k(0.30, P(-0.32, -0.20, 0.40, -2.42), -0.02, -0.14, -0.08, 0.22, 'io'),
+  k(0.55, P(-0.22, -0.14, 0.46, -2.48), 0.02, -0.20, -0.10, 0.26, 'io'), // FULLY LOADED exactly as the "2" lands
+  k(1.10, P(-0.24, -0.14, 0.46, -2.47), 0.04, -0.18, -0.08, 0.25, 'io'), // held, straining, through the "2"
+  k(1.16, P(-0.26, -0.16, 0.48, -2.50), 0.05, -0.22, -0.10, 0.28, 'io'), // the last sink before the release
+  // ...and the cross is OUT on the contact patch before the opponent's fist arrives: he throws LAST, into the
+  // player's glove, and the "1" is the sound of him landing on it. Ordering matters for more than drama — a glove
+  // that arrives second at 30 m/s sweeps THROUGH a glove that is already parked (measured: 8 mm between the meshes
+  // at 1.50 s one way round, 528 vertices inside the other way round; clashtest.mjs §2 casts the rays).
+  k(1.40, P(-1.80, 0.20, 0.32, -0.12), 0.62, 0.34, 0.30, 0.16, 'in'),
+  k(1.55, P(-1.80, 0.20, 0.32, -0.12), 0.62, 0.34, 0.32, 0.16, 'io'), // THE FISTS MEET on the "1"
+  k(1.77, P(-1.80, 0.20, 0.32, -0.12), 0.62, 0.34, 0.44, 0.16, 'io'), // the lock HOLDS, glove to glove...
+  k(2.05, P(-1.80, 0.20, 0.32, -0.12), 0.62, 0.34, 0.42, 0.16, 'io'), // ...until the transition covers the shot
 ];
-/** one side's clash pose, sampled: the arms, the body channels and the flare — THE numbers the game runs. */
+/** one side's clash pose, sampled: the arms, the body channels and the show — THE numbers the game runs. */
 export interface ClashPose {
   arm: 0 | 1; // 1 = the machine's RIGHT hand
   arms: [Pose, Pose];
@@ -639,33 +661,87 @@ export interface ClashPose {
   dip: number;
   roll: number;
   glow: number;
+  lunge: number; // weight forward onto the front foot (drives the stance + the hips)
+  strike: number; // 0..1 optics charge: reaches exactly 1 on the frame the knuckles meet (fires the eye flare)
+  pow: number; // how heavy that release is (drives the size of the optical flash)
+  lookX: number; // gaze target, robot-local (− = towards his own right, which is where the opponent is)
+  lookY: number;
+  yaw: number; // extra root yaw (rad): the machine TURNS to square up as it loads, so it faces its opponent
+  head: number; // extra head turn (rad): keeps his face on the opponent through the cross
+  punch: number; // -1 = no re-plant, else the foot that steps into the punch (1 = the rear / right foot)
+  punchSeq: number; // a new number per clash = exactly one re-plant per throw
+  charge: number; // 0..1 FX: the energy building around the fists before the hit (sparks start spitting)
+  grind: number; // 0..1 FX: the push after the hit (sparks grinding off both knuckles)
+  shock: number; // 0..1 FX: the impact flash envelope
 }
-export const clashStateFrom = (keys: Key[], side: 'hero' | 'foe', t: number): ClashPose => {
+/**
+ * THE LIVE POSE OF ONE MACHINE, at clash time `t`. The keys give the shape; this adds the layer that keeps the pose
+ * breathing — a machine that is loaded to its limit does not stand still, it strains: it presses and gives, sinks a
+ * hair deeper, buzzes on its servos, and after the hit it drives into the other machine and grinds there. Every
+ * term is a pure function of `t`, so the test harness measures exactly what the game plays.
+ */
+export const clashStateFrom = (keys: Key[], side: 'hero' | 'foe', t: number, seq = 1): ClashPose => {
   const s = sampleKeys(keys, t);
   const shock = Math.max(0, 1 - Math.abs(t - VS_CLASH_HIT) / 0.14); // the flare at the instant they meet
-  const strain = t > VS_CLASH_HIT ? 1 : 0; // past it they push against each other, they do not hold a still
-  const tremble = strain ? Math.sin(t * 46) * 0.006 : 0; // a hair of servo strain — small enough that the gloves
-  //                                                        still never close the clearance measured by the tests
+  const grind = t > VS_CLASH_HIT ? Math.min(1, (t - VS_CLASH_HIT) / 0.12) : 0; // the push after it
+  const charge = Math.min(1, Math.max(0, (t - 0.25) / 1.0)) * (1 - shock); // the build-up before it
+  // THE HOLD IS ALIVE. Two slow waves (a press and a settle) plus one fast servo buzz, windowed onto the long coil
+  // and onto the grind after the hit — small enough that the gloves keep the clearance the tests measure.
+  const hold = t > 0.5 && t < VS_CLASH_REL ? Math.min(1, (t - 0.5) / 0.18) : 0;
+  const press = Math.sin(t * 6.1);
+  const surge = Math.sin(t * 9.4);
+  const buzz = Math.sin(t * 47.3) + Math.sin(t * 63.7) * 0.55;
+  const live = hold + grind;
+  const strain = press * (hold * 0.012 + grind * 0.010) + surge * grind * 0.008 + buzz * live * 0.004;
+  const sink = (1 - Math.cos(press * 0.5)) * hold * 0.004 + (0.5 - 0.5 * Math.cos(surge)) * grind * 0.006;
+  const face = Math.min(1, Math.max(0, t / VS_CLASH_HIT)); // 0..1 through the coil and the throw
+  const square = face * face * (3 - 2 * face); // the machines turn to square up as they load, and hold it
+
+  const rel = Math.min(1, Math.max(0, (t - VS_CLASH_REL) / (VS_CLASH_HIT - VS_CLASH_REL)));
+  const strike = t >= VS_CLASH_HIT ? 1 : Math.min(0.999, 0.22 + 0.30 * Math.min(1, t / 0.9) + 0.62 * rel);
+  // THE OPPONENT IS THE MIRROR IMAGE of the player's machine: same cross, thrown with the same right hand, but
+  // every lateral channel of the arm (shoulder yaw `sy`, shoulder roll `sz`) flips — that is what makes the two
+  // bodies true reflections of each other, chest to chest, with their gloves meeting in the middle.
+  const mir = side === 'foe' ? -1 : 1;
   return {
     arm: 1, // BOTH machines throw their RIGHT hand (see the note above)
-    arms: [{ ...GUARD, sx: GUARD.sx - 0.1 * shock }, { ...s.p, ex: s.p.ex + tremble }],
-    twist: (side === 'foe' ? -s.twist : s.twist), // the opponent is the mirror image of the player's machine
-    lean: s.lean,
-    dip: s.dip,
-    roll: (side === 'foe' ? -1 : 1) * tremble * 0.4,
-    glow: 0.45 + 1.05 * shock + strain * 0.25,
+    arms: [
+      // the guard hand stays up, breathes with the load and shrugs on the shock
+      { ...GUARD, sx: GUARD.sx - 0.10 * shock + strain * 0.5, sy: mir * (GUARD.sy + sink * 1.2), sz: mir * GUARD.sz, ex: GUARD.ex + strain * 0.6 },
+      { ...s.p, sx: s.p.sx + strain * 0.55, sy: mir * s.p.sy, sz: mir * s.p.sz, ex: s.p.ex + strain * 0.7 },
+    ],
+    twist: (side === 'foe' ? -s.twist : s.twist) + strain * 0.55,
+    lean: s.lean + strain * 0.30 + sink * 0.5,
+    dip: s.dip + sink,
+    roll: (side === 'foe' ? -1 : 1) * buzz * live * 0.005 + strain * 0.06,
+    glow: 0.45 + 0.5 * charge + 1.15 * shock + grind * 0.35,
+    yaw: (side === 'hero' ? VS_CLASH_SQUARE_HERO : VS_CLASH_SQUARE_FOE) * square,
+    lunge: s.lunge + grind * 0.03,
+    strike,
+    pow: 0.95,
+    // the gaze: the opponent is off to this machine's own right (he is punching across the frame), chin height
+    lookX: (side === 'hero' ? -1 : 1) * (0.35 + 0.35 * Math.min(1, t / 1.2)),
+    lookY: 0.10,
+    // ...and the face follows the fists: the chest unwinds under the head, so the neck has to unwind back the
+    // other way — the numbers below put BOTH faces on the opponent's glove (clashtest.mjs §3 measures the angle).
+    head: side === 'hero' ? 0.24 + 0.46 * face : -(0.20 - 0.10 * face),
+    punch: t >= VS_CLASH_REL ? 1 : -1,
+    punchSeq: seq,
+    charge,
+    grind,
+    shock,
   };
 };
 /** the LIVE clash pose for a side: the player throws the cross, the opponent the straight. */
-export const vsClashState = (side: 'hero' | 'foe', t: number): ClashPose =>
-  clashStateFrom(side === 'hero' ? VS_CLASH_KEYS_CROSS : VS_CLASH_KEYS, side, t);
+export const vsClashState = (side: 'hero' | 'foe', t: number, seq = 1): ClashPose =>
+  clashStateFrom(side === 'hero' ? VS_CLASH_KEYS_CROSS : VS_CLASH_KEYS, side, t, seq);
 /**
  * WHERE THE TWO FISTS ACTUALLY MEET: the mid-point between the two glove centres at the hit, measured on the rig
- * with the real tracks (clashtest.mjs §3b measures it too, and fails if this point drifts more than half a metre off
- * them). The impact flash, the shock ring and the sparks are drawn HERE, and the clash camera lifts its look onto it
- * — so the light is always on the contact patch, not near it.
+ * with the real tracks (clashtest.mjs §3b measures it too, and fails if this point drifts more than a few
+ * centimetres off them). The impact flash, the shock ring and the sparks are drawn HERE, and the clash camera aims
+ * its look onto it — so the light is always on the contact patch, not near it.
  */
-export const VS_CLASH_POINT = { x: 0.25, y: 5.68, z: 2.91 };
+export const VS_CLASH_POINT = { x: 1.10, y: 5.38, z: 1.02 }; // the measured midpoint of the closest vertex pair when the count says "1"
 
 // ------------------------------------------------------------------ THE TRANSITION (menu → ring) SETTING
 /**
@@ -1426,6 +1502,10 @@ export class Game {
   private vsClashHit = false;
   private vsShakeT = 0;
   private vsKick = 0; // 0..1 lens dive as the fists meet
+  private vsSeq = 1; // clash id: every fresh clash re-plants the rear foot exactly once (see vsClashAnim)
+  private vsSparkT = 0; // FX cadence for the coil crackle / the grind sparks
+  private vsWhoosh = false; // one throw = one whoosh
+  private vsRingT = 0; // FX cadence for the grind pressure rings
   private vsFoe: Fighter | null = null;
   private vsFoe2: Fighter | null = null;
   private menuHeroPedestal: THREE.Group;
@@ -6499,17 +6579,18 @@ export class Game {
   /**
    * THE CLASH, as a full animation state. The pose numbers come from `vsClashState` (Game.ts exports it, and the
    * test harness drives the rig with the very same call) — this method only wraps them with the rest of the body:
-   * the breath, the gaze down the line, and no dash / hit / air channels, because the machines are standing still
-   * and throwing one punch each.
+   * the weight going forward, the rear foot re-planting on the release, the face tracking the opponent, the optics
+   * charging through the coil, and the breath. No dash / hit / air channels: the machines are locked in one punch.
    */
   private vsClashAnim(side: 'hero' | 'foe'): AnimState {
-    const c = vsClashState(side, this.vsClash);
+    const c = vsClashState(side, this.vsClash, this.vsSeq * 2 + (side === 'foe' ? 1 : 0));
     const t = this.time;
+    const step = c.punch >= 0; // the release: the rear foot drives into the punch (one re-plant per clash)
     return {
       arms: c.arms,
       twist: c.twist,
       lean: c.lean,
-      lunge: 0,
+      lunge: c.lunge,
       dip: c.dip,
       roll: c.roll,
       vf: 0,
@@ -6524,14 +6605,66 @@ export class Game {
       fall: 0,
       time: t,
       glow: c.glow,
-      flash: 0,
+      flash: c.shock * 0.5,
       tilt: 0,
       dash: 0,
       dashF: 0,
       dashL: 1,
-      lookX: 0,
-      lookY: 0.06, // eyes down the line, at the other machine's fists
+      lookX: c.lookX,
+      lookY: c.lookY,
+      headYaw: c.head,
+      strike: c.strike,
+      strikePow: c.pow,
+      punchFoot: step ? c.punch : -1,
+      punchZ: 0.46,
+      punchX: side === 'hero' ? 0.10 : -0.10,
+      punchDur: 0.24,
+      punchSeq: c.punchSeq,
     };
+  }
+
+  /**
+   * THE SHOW AROUND THE CLASH: the energy that builds on the knuckles through the coil (sparks spitting off the
+   * servos, the crowd starting to whistle), the whoosh as the throw is released, and the grind after the hit — the
+   * two machines pushing against each other, sparks dropping off the contact patch until the shot is covered.
+   */
+  private vsClashFx(dt: number) {
+    const t = this.vsClash;
+    const px = HANGAR_POS.x + VS_CLASH_POINT.x;
+    const pz = HANGAR_POS.z + VS_CLASH_POINT.z;
+    const y = VS_CLASH_POINT.y;
+    const p = new THREE.Vector3(px, y, pz);
+    if (t < VS_CLASH_HIT) {
+      // the build-up: the coil crackles a little, and the last third of a second before the hit it starts spitting
+      const c = vsClashState('hero', t).charge;
+      this.vsSparkT -= dt;
+      if (c > 0.18 && this.vsSparkT <= 0) {
+        this.vsSparkT = 0.16 - c * 0.08;
+        this.fx.spark(p, 2 + Math.round(c * 5), 1.6 + c * 3.2, 0xbfe6ff, new THREE.Vector3(0, 0.3, 1), 0.9, 0.3, 7);
+        if (c > 0.6) this.sfx.crackle(c * 0.5);
+      }
+      // the release: one whoosh + servo surge as the fist leaves the guard
+      if (!this.vsWhoosh && t >= VS_CLASH_REL) {
+        this.vsWhoosh = true;
+        this.sfx.whoosh(0.9);
+        this.sfx.servo();
+      }
+      return;
+    }
+    // the grind: both machines drive into the lock and the knuckles scrape — sparks and a low crackle until covered
+    const g = vsClashState('hero', t).grind;
+    this.vsSparkT -= dt;
+    if (g > 0 && this.vsSparkT <= 0) {
+      this.vsSparkT = 0.09;
+      this.fx.spark(p, 3 + Math.round(g * 7), 2.2 + g * 4.2, 0xffd9a0, new THREE.Vector3(0, 0.25, 1), 1.2, 0.34, 9);
+      if (Math.random() < 0.5) this.sfx.crackle(0.35);
+    }
+    // a thin pressure ring every now and then: the two machines leaning on each other, servos loaded
+    this.vsRingT -= dt;
+    if (g > 0 && this.vsRingT <= 0) {
+      this.vsRingT = 0.22;
+      this.fx.ring(px, pz, 0xffe0a0, 1.6 + g * 1.8, 0.34, y - 0.9);
+    }
   }
 
   /**
@@ -6557,6 +6690,11 @@ export class Game {
     this.camImp.set(0, -0.3, 0.22);
     this.vsShakeT = 1;
     this.hype = Math.min(1, this.hype + 0.6);
+    // ...and the shock travels through BOTH machines: the head whips on its neck, the shoulders lag, the hips sink,
+    // each on its own spring, so the whole body rings instead of the armour moving as one block.
+    this.menuHero.jolt(1.35, 1);
+    if (this.vsFoe) this.vsFoe.robot.jolt(1.35, -1);
+    this.sfx.pyro(0.25);
   }
 
   private animateMenuHero(dt: number) {
@@ -6577,6 +6715,10 @@ export class Game {
         if (this.vsLockT >= VS_CLASH_AT) {
           this.vsClash = 0;
           this.vsClashHit = false;
+          this.vsSeq += 1;
+          this.vsWhoosh = false;
+          this.vsSparkT = 0;
+          this.sfx.charge(); // the coil winds up: the turbines spin up under the count
         }
       }
       if (this.vsClash >= 0) {
@@ -6594,6 +6736,7 @@ export class Game {
         this.menuHero.animate(this.vsClashAnim('hero'), dt);
         if (this.vsFoe) this.vsFoe.robot.animate(this.vsClashAnim('foe'), dt);
         if (this.vsFoe2) this.vsFoe2.robot.animate(this.heroAnimState(this.heroPose, t + 0.6, 0, 0, true), dt);
+        this.vsClashFx(dt);
         return;
       }
       if (this.vsFoe) this.vsFoe.robot.animate(this.heroAnimState(heroPose, t, 0, 0, true), dt);
@@ -7464,25 +7607,32 @@ export class Game {
           const sep = 2.75;
           const fit = aspect < 1.5 ? 1.5 / Math.max(0.6, aspect) : 1;
           const punch = this.vsPunch * this.vsPunch;
-          // THE CLASH CAMERA: back off a touch as the machines load up, then DIVE on the fists as they meet — and
-          // lift the look onto the contact point, 6.5 m up, which is where the two knuckles actually touch.
+          // THE CLASH CAMERA: breathe back a hair as the machines load up, then creep in with them through the
+          // coil, DIVE on the fists as they meet — and lift the look onto the contact patch, which is exactly where
+          // the two knuckles touch (VS_CLASH_POINT is measured on the rig, not guessed).
           const wind = this.vsClash >= 0 ? THREE.MathUtils.clamp(this.vsClash / VS_CLASH_HIT, 0, 1) : 0;
+          const build = wind * wind * (3 - 2 * wind); // ease-in-out: the lens creeps, it does not slide
           const dive = this.vsKick;
-          const clashZoom = 1 + 0.07 * wind * (1 - dive) - 0.22 * dive;
-          const clashLift = dive * (VS_CLASH_POINT.y - 5.45); // the look rises onto the contact patch as it lands
+          const clashZoom = 1 - 0.035 * Math.sin(Math.PI * build) + 0.10 * build * build - 0.26 * dive;
+          const clashLift = dive * (VS_CLASH_POINT.y - 5.45) + build * 0.20; // the look rises onto the contact patch
+          const clashLookZ = build * 0.9 + dive * 0.8; // ...and forward onto the gloves, so the fists hold the middle
           const camDist = 9.6 * fit * (1 - punch * 0.07) * clashZoom;
+          // the clash turns the machines to face each other and walks them into each other (see VS_CLASH_SQUARE /
+          // VS_CLASH_STEP) — the marks close up, the chests square at the opponent, and the fists meet between them
+          const turnH = this.vsClash >= 0 ? vsClashState('hero', this.vsClash).yaw : 0;
+          const turnF = this.vsClash >= 0 ? vsClashState('foe', this.vsClash).yaw : 0;
           this.menuHero.root.position.set(heroX - sep, 0, heroZ);
-          this.menuHero.root.rotation.y = 0.42;
+          this.menuHero.root.rotation.y = 0.42 + turnH;
           const foes = [this.vsFoe, this.vsFoe2];
           foes.forEach((f, i) => {
             if (!f) return;
             const second = i === 1;
             f.robot.root.position.set(heroX + sep + (second ? 2.4 : 0), 0, heroZ - (second ? 2.6 : 0));
-            f.robot.root.rotation.y = -0.42 - (second ? 0.15 : 0);
+            f.robot.root.rotation.y = -0.42 - (second ? 0.15 : 0) - (second ? 0 : turnF);
             f.robot.root.visible = this.vs!.stage !== 'search';
           });
           tp = new THREE.Vector3(heroX, 5.55 - punch * 0.12 + clashLift, heroZ + camDist);
-          tl = new THREE.Vector3(heroX, 5.45 + clashLift, heroZ);
+          tl = new THREE.Vector3(heroX + VS_CLASH_POINT.x * build, 5.45 + clashLift, heroZ + clashLookZ);
         } else if (this.menuCamMode === 'full') {
           const camDist = 13.0 * distScale;
           tp = new THREE.Vector3(heroX, 3.58, heroZ + camDist);

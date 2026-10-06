@@ -11,3 +11,4 @@ preview-*.png
 
 # scratch reference stills pulled from the web while tuning the art
 image-search/
+*.tmp.mjs

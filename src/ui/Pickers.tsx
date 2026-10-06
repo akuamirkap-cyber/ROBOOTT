@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { CAM_MODES, FOOTWORK_STEPS, IQ_STEPS, ULTRA_COLOR } from '../game/Game';
+import { BRIGHTNESS_STEPS, CAM_MODES, FOOTWORK_STEPS, GFX_MODES, IQ_STEPS, QUALITY_TIERS, TRANSITIONS, ULTRA_COLOR, type GfxMode, type TransId } from '../game/Game';
 import { SFX_PROFILES, type SfxProfile } from '../game/audio';
 import { cssVar } from './Emblem';
 
@@ -183,6 +183,164 @@ export function IqPicker({ value, onPick }: { value: number; onPick: (n: number)
         <span className="text-amber-300">⚡</span>
         <span className="truncate">{IQ_SUB[value] ?? ''}</span>
       </div>
+    </div>
+  );
+}
+
+const GFX_COLOR = '#5ee7a0';
+const GFX_DESC: Record<GfxMode, string> = {
+  auto: 'Governor 60 fps: kualitas naik-turun sendiri mengikuti beban GPU',
+  max: 'Semua efek menyala — refleksi lantai, bloom, bayangan 2048, AA 4×',
+  balanced: 'Refleksi kanvas saja, bloom lebih murah, bayangan 1536',
+  performance: 'Tanpa refleksi, AA via FXAA, bayangan 1024 — paling ringan, tetap ber-bloom',
+};
+
+/** the graphics modes: the 60 fps governor, or a tier the player pins by hand */
+export function GfxPicker({ value, onPick, fps, tier }: { value: GfxMode; onPick: (m: GfxMode) => void; fps?: number; tier?: string }) {
+  return (
+    <div>
+      <SectionTitle
+        right={
+          <span className="font-tech text-[9px] tracking-[0.2em]" style={{ color: GFX_COLOR }}>
+            {fps ? `${Math.round(fps)} FPS` : ''}
+            {tier ? ` · ${tier}` : ''}
+          </span>
+        }
+      >
+        GRAFIS &amp; PERFORMA
+      </SectionTitle>
+      <div className="grid grid-cols-4 gap-1.5">
+        {GFX_MODES.map((m, i) => {
+          const on = m.id === value;
+          return (
+            <button
+              key={m.id}
+              onClick={() => onPick(m.id)}
+              className={`tile cut-sm pointer-events-auto relative px-1 py-1.5 text-center ${on ? 'tile-on' : ''}`}
+              style={cssVar('--c', GFX_COLOR)}
+            >
+              <div className="font-display text-[12px] leading-none tracking-wider" style={{ color: on ? GFX_COLOR : '#ffffff' }}>
+                {i + 1}. {m.name}
+              </div>
+              <div className="mx-auto mt-1 flex w-10 gap-0.5">
+                {GFX_MODES.map((_, k) => (
+                  <i key={k} className="block h-[3px] flex-1" style={{ background: k <= i ? (on ? GFX_COLOR : 'rgba(255,255,255,0.55)') : 'rgba(255,255,255,0.14)' }} />
+                ))}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 flex items-center gap-1.5 rounded border border-white/5 bg-white/[0.03] px-2 py-1 font-tech text-[8.5px] tracking-wide text-white/65">
+        <span style={{ color: GFX_COLOR }}>✦</span>
+        <span className="truncate">{GFX_DESC[value]}</span>
+      </div>
+    </div>
+  );
+}
+
+const BRIGHT_LABEL: Record<number, string> = { 0.85: 'GELAP', 0.95: 'LEMBUT', 1: 'NORMAL', 1.12: 'TERANG', 1.25: 'SILAU' };
+
+/**
+ * THE EXPOSURE. Everything else in this file trades detail for speed; this one is taste, so it stays in the
+ * player's hands. The game's auto-exposure watches the frame underneath it, so pushing this up cannot blow the
+ * picture out — it just moves the whole show up or down the curve.
+ */
+export function BrightnessPicker({ value, onPick }: { value: number; onPick: (b: number) => void }) {
+  return (
+    <div className="mt-3">
+      <SectionTitle
+        right={
+          <span className="font-tech text-[9px] tracking-[0.2em]" style={{ color: GFX_COLOR }}>
+            {Math.round(value * 100)}%
+          </span>
+        }
+      >
+        KECERAHAN GAMBAR
+      </SectionTitle>
+      <div className="grid grid-cols-5 gap-1.5">
+        {BRIGHTNESS_STEPS.map((b) => {
+          const on = b === value;
+          return (
+            <button
+              key={b}
+              onClick={() => onPick(b)}
+              className={`tile cut-sm pointer-events-auto relative px-1 py-1.5 text-center ${on ? 'tile-on' : ''}`}
+              style={cssVar('--c', GFX_COLOR)}
+            >
+              <div className="font-display text-[16px] leading-none" style={{ color: on ? GFX_COLOR : '#ffffff' }}>
+                {b === 1 ? '1.0' : b.toFixed(2).slice(1)}
+              </div>
+              <div className="mt-0.5 font-tech text-[7px] font-bold tracking-[0.1em] text-white/65">{BRIGHT_LABEL[b] ?? ''}</div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 text-[10px] leading-tight text-white/45">
+        Menyetel exposure seluruh gambar (arena dan lobby) tanpa mengubah pencahayaan panggung — lampu, bloom dan
+        warna tetap sama, hanya terangnya yang bergeser.
+      </div>
+    </div>
+  );
+}
+
+/**
+ * HOW THE LOBBY HANDS OVER TO THE RING. Every kind is dressed over the same beat — the fist clash on the VS screen,
+ * then the cover, then the bell under it — so this only changes the look, never when the fight starts. "COBA" plays
+ * the picked one over the lobby right now, so you can choose one without having to start a match.
+ */
+export function TransitionPicker({ value, onPick, onTry }: { value: TransId; onPick: (id: TransId) => void; onTry?: () => void }) {
+  const cur = TRANSITIONS.find((t) => t.id === value) ?? TRANSITIONS[0];
+  return (
+    <div>
+      <SectionTitle
+        right={
+          onTry ? (
+            <button onClick={onTry} className="pointer-events-auto border border-amber-300/60 bg-amber-400/15 px-2 py-0.5 font-tech text-[9px] font-bold tracking-[0.2em] text-amber-100 hover:bg-amber-400/30">
+              ▶ COBA
+            </button>
+          ) : null
+        }
+      >
+        TRANSISI MASUK RING
+      </SectionTitle>
+      <div className="grid grid-cols-2 gap-2">
+        {TRANSITIONS.map((t) => {
+          const on = t.id === value;
+          return (
+            <button
+              key={t.id}
+              onClick={() => onPick(t.id)}
+              className={`tile cut-sm pointer-events-auto relative px-3 py-2 text-left ${on ? 'tile-on' : ''}`}
+              style={cssVar('--c', '#ffd34a')}
+            >
+              <div className="font-display text-[15px] tracking-wider" style={{ color: on ? '#ffd34a' : '#ffffff' }}>
+                {t.name}
+              </div>
+              <div className="mt-0.5 text-[10px] leading-tight text-white/55">{t.hint}</div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 text-[10px] leading-tight text-white/45">
+        Terjadi tepat saat kedua robot mengadu tinju di layar VS: {cur.name.toLowerCase()} menutup potongan gambar ke
+        ring walk. Tekan ▶ COBA untuk melihatnya sekarang, tanpa harus memulai pertandingan.
+      </div>
+    </div>
+  );
+}
+
+/** the five rungs the picture can run on, top to bottom — purely informational, the game picks the rung itself */
+export function TierLadder({ tier }: { tier?: string }) {
+  return (
+    <div className="mt-1 flex items-center gap-1.5 font-tech text-[8px] tracking-[0.16em] text-white/40">
+      <span>LADDER</span>
+      {QUALITY_TIERS.map((t) => (
+        <span key={t.key} className={t.name === tier ? 'font-bold text-emerald-300' : ''}>
+          {t.name}
+          {t.key !== QUALITY_TIERS[QUALITY_TIERS.length - 1].key ? ' ▸' : ''}
+        </span>
+      ))}
     </div>
   );
 }

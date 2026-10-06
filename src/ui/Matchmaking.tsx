@@ -58,6 +58,7 @@ export function Matchmaking({
   iq,
   game,
   onReady,
+  onClash,
   onCancel,
 }: {
   series: Series;
@@ -67,6 +68,8 @@ export function Matchmaking({
   iq: number;
   game: Game | null;
   onReady: () => void;
+  /** fired the instant the two machines clash fists (the last second of the lock-in count) — see Game's VS_CLASH */
+  onClash?: () => void;
   onCancel: () => void;
 }) {
   const meta = modeOf(series.mode);
@@ -93,6 +96,8 @@ export function Matchmaking({
   const ping = useMemo(() => 18 + Math.floor(Math.random() * 20), []);
   const readyRef = useRef(onReady);
   readyRef.current = onReady;
+  const clashRef = useRef(onClash);
+  clashRef.current = onClash;
   const found = phase !== 'search';
 
   // ---- the 3D stage: both Titans in the hangar, the opponent revealed on 'found'
@@ -133,6 +138,8 @@ export function Matchmaking({
           if (c > 0) {
             setCount(c);
             game?.uiCue('lock');
+            // the "1": the two machines throw their fists on this beat — the ring transition rides on it
+            if (c === 1) clashRef.current?.();
           } else {
             game?.uiCue('go');
             window.clearInterval(id);

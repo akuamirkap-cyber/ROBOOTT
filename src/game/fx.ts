@@ -333,7 +333,7 @@ export class Effects {
     f.s.visible = true;
     this.light.position.copy(p);
     this.light.color.setHex(color);
-    this.lightPow = size * 16;
+    this.lightPow = size * 19; // a heavier punch of light on an impact — the ring answers every blow
   }
 
   update(dt: number, cam?: THREE.Camera) {

@@ -6,17 +6,19 @@ import {
   ULTRA_COLOR,
   loadGloveSkin, loadArmorSkin,
   loadHelmetSkin,
+  hpThick,
   smartDef,
   ultraDef,
   type Game,
   type HeroPose,
   type HudState,
   type OpponentDef,
+  type TransId,
 } from '../game/Game';
 import { ARMOR_SKINS, GLOVE_SKINS, HELMET_SKINS } from '../game/build';
 import type { SfxProfile } from '../game/audio';
 import { Key, cssVar } from './Emblem';
-import { CamPicker, DifficultyPicker, FootworkPicker, IqPicker, SfxPicker } from './Pickers';
+import { CamPicker, DifficultyPicker, FootworkPicker, IqPicker, SfxPicker, TransitionPicker } from './Pickers';
 import { ACCOUNT_NAME, MODES, levelOf, tierOf, weekResetIn, wrcPoints, type ModeId, type Profile } from '../game/progress';
 import { Avatar, ProfileCard, ProfileSheet } from './Profile';
 import { Leaderboard, ModeDossier, ModeHub, type LobbyView } from './Modes';
@@ -47,6 +49,10 @@ export interface MenuProps {
   mode: ModeId;
   onMode: (m: ModeId) => void;
   onStartMode: (m: ModeId) => void;
+  /** the picked ring transition, and a live preview of it (see TRANSITIONS in Game.ts) */
+  trans: TransId;
+  onTrans: (id: TransId) => void;
+  onTransTry: () => void;
 }
 
 const act = (fn: () => void) => (e: MouseEvent<HTMLButtonElement>) => {
@@ -251,7 +257,7 @@ const CONTROLS: { title: string; rows: [string[], string][] }[] = [
   {
     title: 'SERANGAN & KOMBO',
     rows: [
-      [['H'], 'Jab cepat pembuka kombo'],
+      [['H'], 'JAB — pukulan tercepat & terpanjang (jangkauan 4,4 m): pembuka kombo, penembus guard, dan pengisi meter Overdrive terbaik. Beruntun 1-1-1-1 makin cepat (sampai +30%)'],
       [['J'], 'Hook samping melengkung'],
       [['K'], 'Uppercut (melontarkan lawan ke udara)'],
       [['L'], 'COUNTER — tangkap serangan lawan tepat waktu & balas lurus otomatis!'],
@@ -264,7 +270,7 @@ const CONTROLS: { title: string; rows: [string[], string][] }[] = [
     title: 'TARGET PUKULAN, RAGE & OVERDRIVE',
     rows: [
       [['G'], 'RAGE MODE 🔥 — tingkatkan kecepatan bertarung, kombo agresif & dorongan pukulan!'],
-      [['R'], 'OVERDRIVE FREESTYLE — muter-muter tangan 360° lalu menghajar lawan (bisa mencopot kepala)!'],
+      [['R'], 'OVERDRIVE (4 jurus bergiliran): FREESTYLE 360° muter-muter tangan → STRAIGHT lurus sepanjang ring → UPPERCUT pelontar ke udara (paling tinggi!) → SLAM hantaman atas. Semua menembus blok (bisa mencopot kepala)!'],
       [['Q', '/', 'T'], 'Ganti titik sasaran: KEPALA (stun & KO cepat) → DADA (kuras stamina & hancurkan blok) → REMIX (kombinasi otomatis atas-bawah, lawan tak bisa pasang blok di satu level)'],
     ],
   },
@@ -321,6 +327,9 @@ export function Menu({
   mode,
   onMode,
   onStartMode,
+  trans,
+  onTrans,
+  onTransTry,
 }: MenuProps) {
   const [tab, setTab] = useState<MenuTab>('lobby');
   const [showProfile, setShowProfile] = useState(false);
@@ -1346,6 +1355,9 @@ export function Menu({
                 </div>
               </div>
               <div className="lobby-subcard rounded-lg p-3.5">
+                <TransitionPicker value={trans} onPick={onTrans} onTry={onTransTry} />
+              </div>
+              <div className="lobby-subcard rounded-lg p-3.5">
                 <SfxPicker value={sfx} onPick={onSfx} />
               </div>
               <div className="lobby-subcard rounded-lg p-3.5">
@@ -1475,7 +1487,7 @@ export function Menu({
 
           {/* Spec line */}
           <div className="aaa-spec">
-            <span><b>HP</b> {def.hp}</span>
+            <span><b>HP</b> {hpThick(def.hp)}</span>
             <i />
             <span><b>COMBO</b> ×{def.combo}</span>
             {def.slam && (

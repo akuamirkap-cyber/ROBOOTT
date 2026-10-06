@@ -62,6 +62,19 @@ body,
   30% { transform: translate(-50%, -75%) scale(1); }
   100% { transform: translate(-50%, -200%) scale(0.9); opacity: 0; }
 }
+/* THE LEFT COLUMN: anchored to the left edge instead of the fighters. `left` is set inline by the game; the
+   animation keeps the X origin at 0 so the text grows and drifts inwards from the edge, never off it. */
+.popup.pop-left {
+  left: 16px;
+  text-align: left;
+  animation: floaty-left 1s ease-out forwards;
+}
+@keyframes floaty-left {
+  0% { transform: translate(0, -30%) scale(0.4); opacity: 0; }
+  12% { transform: translate(5px, -60%) scale(1.35); opacity: 1; }
+  30% { transform: translate(9px, -75%) scale(1); }
+  100% { transform: translate(20px, -170%) scale(0.9); opacity: 0; }
+}
 .pop-dmg { color: #ffd35a; font-size: 36px; }
 .pop-big { color: #ff7a2a; font-size: 64px; }
 .pop-crit { color: #ff3d6a; font-size: 30px; }
@@ -2056,4 +2069,174 @@ button.mw-ico:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
   .cin-sheet { display: none; }
   .cin-verdict { max-width: 90%; }
   .cin-keys { display: none; }
+}
+
+/* ====================================================================== THE TRANSITION (lobby → ring)
+   The VS screen's fist clash is the last beat of the lobby; this layer is what covers the cut from that shot into
+   the ring walk. It sits above EVERYTHING (the VS overlay included) and is pointer-transparent, so the fight can
+   start underneath it. Timings are per-kind: `--tr-tot` is the whole animation (cover + reveal), and every kind
+   reaches full cover before the bell at 1000 ms — the launch always happens under the cover, never in the open. */
+.trans-root {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  overflow: hidden;
+  pointer-events: none;
+}
+/* THE PAGE DIVE (zoom): the whole app — canvas and UI — scales up into the impact point, then is snapped back
+   under the cover, so the ring is revealed at its own scale. */
+.app-dive {
+  transform: scale(1.34);
+  transform-origin: 50% 44%;
+  transition: transform 1000ms cubic-bezier(0.45, 0, 0.72, 0);
+}
+
+/* ---- PUNCH ZOOM: the impact blooms, the frame dives, the dark closes ---- */
+.tr-bloom {
+  position: absolute;
+  left: 50%;
+  top: 44%;
+  width: 78vmax;
+  height: 78vmax;
+  margin: -39vmax 0 0 -39vmax;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.98) 0%, rgba(255, 216, 150, 0.55) 24%, rgba(255, 170, 60, 0) 62%);
+  animation: trBloom var(--tr-tot) ease-out both;
+}
+@keyframes trBloom {
+  0% { transform: scale(0.05); opacity: 0; }
+  5% { opacity: 1; }
+  16% { transform: scale(1); opacity: 0.9; }
+  30% { transform: scale(1.06); opacity: 0.35; }
+  44% { opacity: 0; }
+  100% { transform: scale(1.08); opacity: 0; }
+}
+.tr-dark {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(115% 100% at 50% 44%, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.75) 46%, #000 74%);
+  opacity: 0;
+  animation: trDark var(--tr-tot) ease-in-out both;
+}
+@keyframes trDark {
+  0% { opacity: 0; }
+  59% { opacity: 1; }
+  64% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ---- FLASH PUTIH: the clash turns into light, and the light opens onto the ring ---- */
+.tr-white {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 44%, #ffffff 0%, #fffaf0 42%, #ffeccb 72%, #ffd9a0 100%);
+  opacity: 0;
+  animation: trWhite var(--tr-tot) ease-out both;
+}
+@keyframes trWhite {
+  0% { opacity: 0; }
+  9% { opacity: 1; }
+  14% { opacity: 1; }
+  59% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.tr-white-ring {
+  position: absolute;
+  left: 50%;
+  top: 44%;
+  width: 40vmax;
+  height: 40vmax;
+  margin: -20vmax 0 0 -20vmax;
+  border-radius: 50%;
+  border: 10px solid rgba(255, 255, 255, 0.85);
+  animation: trWhiteRing var(--tr-tot) ease-out both;
+}
+@keyframes trWhiteRing {
+  0% { transform: scale(0.05); opacity: 0.9; }
+  26% { transform: scale(2.4); opacity: 0; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+
+/* ---- WIPE BAJA: a steel plate sweeps across, and the ring is behind it ---- */
+.tr-wipe {
+  position: absolute;
+  inset: -12% -34%;
+  background: linear-gradient(101deg, #04060b 0 34%, #10151f 46%, #232c3c 52%, #10151f 58%, #04060b 70%, rgba(4, 6, 11, 0) 78%);
+  transform: translateX(-135%) skewX(-9deg);
+  animation: trWipe var(--tr-tot) cubic-bezier(0.5, 0.02, 0.3, 1) both;
+}
+@keyframes trWipe {
+  0% { transform: translateX(-135%) skewX(-9deg); }
+  41% { transform: translateX(0) skewX(-9deg); }
+  59% { transform: translateX(0) skewX(-9deg); }
+  100% { transform: translateX(135%) skewX(-9deg); }
+}
+.tr-wipe-edge {
+  position: absolute;
+  inset: -12% -34%;
+  background: linear-gradient(101deg, rgba(255, 255, 255, 0) 0 42%, rgba(210, 232, 255, 0.9) 47%, rgba(255, 255, 255, 0) 52%);
+  transform: translateX(-135%) skewX(-9deg);
+  animation: trWipe var(--tr-tot) cubic-bezier(0.5, 0.02, 0.3, 1) both;
+}
+.tr-wipe-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, #eaf4ff 20%, #ffffff 50%, #eaf4ff 80%, rgba(255, 255, 255, 0) 100%);
+  filter: blur(2px);
+  animation: trWipeLine var(--tr-tot) cubic-bezier(0.5, 0.02, 0.3, 1) both;
+}
+@keyframes trWipeLine {
+  0% { left: -6%; opacity: 0; }
+  4% { opacity: 1; }
+  41% { left: 94%; }
+  59% { left: 94%; }
+  100% { left: 104%; opacity: 0; }
+}
+
+/* ---- GELOMBANG: the shock ring runs out of the fists and the frame goes black behind it ---- */
+.tr-shockring {
+  position: absolute;
+  left: 50%;
+  top: 44%;
+  width: 46vmax;
+  height: 46vmax;
+  margin: -23vmax 0 0 -23vmax;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0) 52%, rgba(255, 236, 196, 0.85) 62%, rgba(255, 190, 90, 0.35) 70%, rgba(255, 190, 90, 0) 78%);
+  animation: trShockRing var(--tr-tot) ease-out both;
+}
+@keyframes trShockRing {
+  0% { transform: scale(0.12); opacity: 1; }
+  34% { transform: scale(1.5); opacity: 0.35; }
+  62% { transform: scale(2.6); opacity: 0; }
+  100% { transform: scale(2.8); opacity: 0; }
+}
+.tr-shockdark {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120% 105% at 50% 44%, rgba(0, 0, 0, 0) 22%, rgba(0, 0, 0, 0.85) 58%, #000 78%);
+  opacity: 0;
+  animation: trShockDark var(--tr-tot) ease-in-out both;
+}
+@keyframes trShockDark {
+  0% { opacity: 0; }
+  56% { opacity: 1; }
+  63% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ---- HARD CUT: one frame of light, then the ring (no cover at all) ---- */
+.tr-cut {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, #ffffff, #ffe9c8);
+  opacity: 0;
+  animation: trCut var(--tr-tot) steps(1, end) both;
+}
+@keyframes trCut {
+  0% { opacity: 0.95; }
+  45% { opacity: 0.0; }
+  100% { opacity: 0; }
 }

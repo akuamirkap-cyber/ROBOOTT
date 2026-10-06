@@ -26,8 +26,11 @@ export interface Arena {
   canvasSlam(x: number, z: number, strength: number): void;
   /** TEAM MATCH: the whole ring (canvas, apron, posts, ropes) grows by this factor; 1 = the standard 1v1 ring */
   setRingScale(s: number): void;
-  /** the glossy floors (real planar reflections of the Titans and the lights) — switched off on slow machines */
-  setMirrors(on: boolean): void;
+  /**
+   * the glossy floors (real planar reflections of the Titans and the lights). The canvas sheen and the hall floor
+   * are switched separately — the quality ladder drops the hall first, then the canvas.
+   */
+  setMirrors(canvasOn: boolean, hallOn?: boolean): void;
   keyLight: THREE.DirectionalLight;
   rimRed: THREE.SpotLight;
   rimBlue: THREE.SpotLight;
@@ -310,13 +313,15 @@ function floorDecalTexture() {
 }
 
 export function buildArena(scene: THREE.Scene): Arena {
-  scene.background = new THREE.Color(0x02040a);
-  scene.fog = new THREE.FogExp2(0x04060e, 0.0058);
+  scene.background = new THREE.Color(0x03050c);
+  // the haze is what makes the light show visible: a little more of it, and warmer, so every beam has something
+  // to bite on and the hall reads as a lit volume instead of a black void
+  scene.fog = new THREE.FogExp2(0x060a16, 0.0056);
 
   // ---------- Balanced Stadium Broadcast & Championship Ring Lighting (Zero extra light overhead) ----------
-  scene.add(new THREE.AmbientLight(0x8fa6d8, 0.16));
-  scene.add(new THREE.HemisphereLight(0x7f9fe8, 0x1a1218, 0.34));
-  const key = new THREE.DirectionalLight(0xfff1dc, 2.4);
+  scene.add(new THREE.AmbientLight(0x9fb4e4, 0.18)); // a hair above the old 0.16: the dark side of a Titan is not muddy, but it is still DARK
+  scene.add(new THREE.HemisphereLight(0x8faeee, 0x1d1520, 0.37));
+  const key = new THREE.DirectionalLight(0xfff1dc, 2.45);
   key.position.set(12, 40, 18);
   key.castShadow = true;
   key.shadow.mapSize.set(2048, 2048);
@@ -341,19 +346,26 @@ export function buildArena(scene: THREE.Scene): Arena {
     return s;
   };
   // THE RING KEY: one big warm followspot straight down onto the canvas — the ring blazes, the hall falls off
-  // into the dark, the way a title fight is lit for television
-  const ringKey = new THREE.SpotLight(0xfff3e2, 62, 80, 0.62, 0.55, 1.0);
+  // into the dark, the way a title fight is lit for television. Brighter, wider and with a hotter falloff than
+  // before, so the canvas is a pool of real light and every scuff on it reads.
+  const ringKey = new THREE.SpotLight(0xfff3e2, 64, 92, 0.68, 0.5, 0.94);
   ringKey.position.set(5, 33, 7);
   ringKey.target.position.set(0, 0, 0);
   scene.add(ringKey, ringKey.target);
+  // ...and a second, cool-white wash from the opposite corner: it lifts the ring apron and gives every fighter
+  // a crisp edge on BOTH shoulders, which is what makes a shot read as lit rather than merely bright
+  const ringFill = new THREE.SpotLight(0xdceaff, 22, 86, 0.86, 0.62, 1.0);
+  ringFill.position.set(-11, 30, -13);
+  ringFill.target.position.set(0, 0, 0);
+  scene.add(ringFill, ringFill.target);
   // the coloured corner rims are cinematic rims now — a warm crimson and a cool steel-blue edge light on the
   // fighters' shoulders — and the white kicker from the side cuts them out of the dark
-  const rimRed = mkRim(0xff4a3c, -22, -28, 4.0);
-  const rimBlue = mkRim(0x4a92ff, 22, 28, 4.0);
-  const rimSide = mkRim(0xd8e4ff, 30, -12, 1.9); // a clean white-blue side kicker instead of the purple wash
+  const rimRed = mkRim(0xff4a3c, -22, -28, 4.5);
+  const rimBlue = mkRim(0x4a92ff, 22, 28, 4.5);
+  const rimSide = mkRim(0xd8e4ff, 30, -12, 2.4); // a clean white-blue side kicker instead of the purple wash
 
   // ---------- floor ----------
-  const floor = new THREE.Mesh(new THREE.CircleGeometry(150, 48), new THREE.MeshStandardMaterial({ color: 0x070910, roughness: 0.3, metalness: 0.55 }));
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(150, 48), new THREE.MeshStandardMaterial({ color: 0x0b0e18, roughness: 0.28, metalness: 0.58 }));
   floor.rotation.x = -Math.PI / 2;
   floor.position.y = -1.4;
   floor.receiveShadow = true;
@@ -369,7 +381,7 @@ export function buildArena(scene: THREE.Scene): Arena {
   const topMat = new THREE.MeshStandardMaterial({ map: ringTex, roughness: 0.74, metalness: 0.04 });
   const apronTex = stripTexture(true);
   apronTex.repeat.set(1, 1);
-  const apronMat = new THREE.MeshStandardMaterial({ map: apronTex, emissiveMap: apronTex, emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.2, roughness: 0.7, metalness: 0.2 });
+  const apronMat = new THREE.MeshStandardMaterial({ map: apronTex, emissiveMap: apronTex, emissive: new THREE.Color(0xffffff), emissiveIntensity: 0.3, roughness: 0.66, metalness: 0.22 });
   const baseMat = new THREE.MeshStandardMaterial({ color: 0x14161d, roughness: 0.6, metalness: 0.6 });
   const ring = new THREE.Group(); // everything that must grow with the ring in TEAM MATCH (2v2)
   scene.add(ring);
@@ -381,21 +393,23 @@ export function buildArena(scene: THREE.Scene): Arena {
   ring.add(platform);
 
   // ---------- THE GLOSSY FLOORS: real reflections of the Titans and the lights in the canvas and the hall floor
-  const canvasSheen = buildSheen(new THREE.PlaneGeometry(30.6, 30.6), { strength: 0.5, res: 640 });
+  const canvasSheen = buildSheen(new THREE.PlaneGeometry(30.6, 30.6), { strength: 0.55, res: 512 });
   canvasSheen.mesh.rotation.x = -Math.PI / 2;
   canvasSheen.mesh.position.y = 0.025;
   ring.add(canvasSheen.mesh);
-  const hallSheen = buildSheen(new THREE.RingGeometry(14, 62, 72, 1), { strength: 0.55, res: 512, layer: REFLECT_LIGHTS_LAYER });
+  const hallSheen = buildSheen(new THREE.RingGeometry(14, 62, 72, 1), { strength: 0.6, res: 384, layer: REFLECT_LIGHTS_LAYER });
   hallSheen.mesh.rotation.x = -Math.PI / 2;
   hallSheen.mesh.position.y = -1.375;
   scene.add(hallSheen.mesh);
-  const setMirrors = (on: boolean) => {
-    canvasSheen.setEnabled(on);
-    hallSheen.setEnabled(on);
+  // the two glossies are switched separately: the canvas sheen carries the heroes (switch it off last), the hall
+  // floor is the big, soft one that the quality governor gives up first
+  const setMirrors = (canvasOn: boolean, hallOn = canvasOn) => {
+    canvasSheen.setEnabled(canvasOn);
+    hallSheen.setEnabled(hallOn);
   };
 
-  const neonRed = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xe03a44).multiplyScalar(0.75) });
-  const neonBlue = new THREE.MeshBasicMaterial({ color: new THREE.Color(0x4f86e8).multiplyScalar(0.75) });
+  const neonRed = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff4350).multiplyScalar(0.8) });
+  const neonBlue = new THREE.MeshBasicMaterial({ color: new THREE.Color(0x5f9bff).multiplyScalar(0.8) });
   const mkStrip = (w: number, d: number, x: number, z: number, m: THREE.Material, y = -0.05) => {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, 0.1, d), m);
     mesh.position.set(x, y, z);
@@ -638,8 +652,8 @@ export function buildArena(scene: THREE.Scene): Arena {
   const ENTRY_GAP = 0.19; // half-angle of the opening in the boards (≈ 5 m at r 26.5)
   const ledTex = stripTexture(false);
   ledTex.repeat.set(-6, 1); // negative: the strip is seen from inside the cylinder
-  const ledMat = new THREE.MeshBasicMaterial({ map: ledTex, side: THREE.BackSide, color: new THREE.Color(0.85, 0.85, 0.85) });
-  const rimMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0x6f9bff).multiplyScalar(0.8) });
+  const ledMat = new THREE.MeshBasicMaterial({ map: ledTex, side: THREE.BackSide, color: new THREE.Color(0.9, 0.9, 0.9) });
+  const rimMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0x7fabff).multiplyScalar(0.86) });
   const arcs: [number, number][] = [
     [ENTRY_A[0] + ENTRY_GAP, ENTRY_A[1] - ENTRY_GAP],
     [ENTRY_A[1] + ENTRY_GAP, ENTRY_A[0] + Math.PI * 2 - ENTRY_GAP],
@@ -867,18 +881,18 @@ export function buildArena(scene: THREE.Scene): Arena {
   const wallTex = wallTexture();
   wallTex.wrapS = THREE.RepeatWrapping;
   wallTex.repeat.set(-1, 1);
-  const wall = new THREE.Mesh(new THREE.CylinderGeometry(64, 64, 44, 96, 1, true), new THREE.MeshBasicMaterial({ map: wallTex, side: THREE.BackSide, color: new THREE.Color(0.85, 0.85, 0.9) }));
+  const wall = new THREE.Mesh(new THREE.CylinderGeometry(64, 64, 44, 96, 1, true), new THREE.MeshBasicMaterial({ map: wallTex, side: THREE.BackSide, color: new THREE.Color(0.92, 0.92, 0.99) }));
   wall.position.y = 20.6;
   scene.add(wall);
   const roof = new THREE.Mesh(new THREE.ConeGeometry(64, 14, 64, 1, true), new THREE.MeshBasicMaterial({ color: 0x090b12, side: THREE.BackSide }));
   roof.position.y = 49.6;
   scene.add(roof);
-  const roofRim = new THREE.Mesh(new THREE.TorusGeometry(62.5, 0.5, 6, 96), new THREE.MeshBasicMaterial({ color: new THREE.Color(0x9db6ff).multiplyScalar(0.35) }));
+  const roofRim = new THREE.Mesh(new THREE.TorusGeometry(62.5, 0.5, 6, 96), new THREE.MeshBasicMaterial({ color: new THREE.Color(0x9db6ff).multiplyScalar(0.42) }));
   roofRim.rotation.x = Math.PI / 2;
   roofRim.position.y = 42;
   scene.add(roofRim);
 
-  const bannerMat = new THREE.MeshBasicMaterial({ map: bannerTexture(), color: new THREE.Color(0.9, 0.9, 0.9) });
+  const bannerMat = new THREE.MeshBasicMaterial({ map: bannerTexture(), color: new THREE.Color(0.93, 0.93, 0.93) });
   for (let i = 0; i < 6; i++) {
     const a = (i / 6) * Math.PI * 2 + 0.52;
     const x = Math.cos(a) * 63.3;
@@ -904,7 +918,7 @@ export function buildArena(scene: THREE.Scene): Arena {
   truss2.rotation.x = Math.PI / 2;
   truss2.position.y = 34;
   scene.add(truss2);
-  const lamps = new THREE.InstancedMesh(new THREE.SphereGeometry(0.6, 8, 6), new THREE.MeshBasicMaterial({ color: new THREE.Color(0xdbe6ff).multiplyScalar(0.82) }), 40);
+  const lamps = new THREE.InstancedMesh(new THREE.SphereGeometry(0.6, 8, 6), new THREE.MeshBasicMaterial({ color: new THREE.Color(0xdbe6ff).multiplyScalar(1.26) }), 40);
   const dm = new THREE.Object3D();
   for (let i = 0; i < 40; i++) {
     const a = (i / 40) * Math.PI * 2;
@@ -959,7 +973,7 @@ export function buildArena(scene: THREE.Scene): Arena {
   jumbo.scale.setScalar(2.2);
   const hous = new THREE.Mesh(new THREE.BoxGeometry(6.2, 3.7, 6.2), new THREE.MeshStandardMaterial({ color: 0x15171d, metalness: 0.8, roughness: 0.5 }));
   jumbo.add(hous);
-  const scrMat = new THREE.MeshBasicMaterial({ map: sTex, color: new THREE.Color(0.76, 0.76, 0.76) });
+  const scrMat = new THREE.MeshBasicMaterial({ map: sTex, color: new THREE.Color(1.02, 1.02, 1.02) });
   for (let i = 0; i < 4; i++) {
     const p = new THREE.Mesh(new THREE.PlaneGeometry(5.9, 3.32), scrMat);
     const a = (i * Math.PI) / 2;
@@ -991,16 +1005,19 @@ export function buildArena(scene: THREE.Scene): Arena {
     crowd.update(t, smoothHype, frame & 1);
     const foc = focus ?? ORIGIN;
     props.update(t, dt, smoothHype, foc);
-    rimSide.intensity = 1.9 + smoothHype * 0.5;
-    ringKey.intensity = 62 + smoothHype * 10 + Math.sin(t * 0.7) * 1.2 + kick * kick * 40;
+    rimSide.intensity = 2.4 + smoothHype * 0.55;
+    // the ring key breathes: a slow tide under the fight, and a hard SURGE on every heavy impact (the whole ring
+    // blows out for a moment, the way a camera's auto-exposure reacts to a flash bulb)
+    ringKey.intensity = 64 + smoothHype * 10 + Math.sin(t * 0.7) * 1.2 + kick * kick * 38;
+    ringFill.intensity = 22 + smoothHype * 5;
     ledTex.offset.x = (ledTex.offset.x + dt * 0.012) % 1;
     spotRig.update(t, dt, smoothHype, foc);
     jumbo.rotation.y = t * 0.12;
     show.update(t, dt, smoothHype);
     // the apron LEDs breathe with the crowd
     const ap = 0.7 + Math.max(0, Math.sin(t * 2.6)) * (0.12 + smoothHype * 0.2);
-    neonRed.color.setHex(0xe03a44).multiplyScalar(ap);
-    neonBlue.color.setHex(0x4f86e8).multiplyScalar(ap);
+    neonRed.color.setHex(0xff4350).multiplyScalar(ap);
+    neonBlue.color.setHex(0x5f9bff).multiplyScalar(ap);
   };
 
   return { update, setScreen, setFaces: show.setFaces, ropeHit, ropePress, ropeSpread, canvasSlam, setRingScale, setMirrors, keyLight: key, rimRed, rimBlue, towers: props.towers, track: spotRig.track, strobe };

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CAM_MODES, Game, OPPONENTS, loadCamMode, loadDifficulty, loadFootwork, loadIq, type HudState } from './game/Game';
+import { CAM_MODES, Game, GFX_MODES, OPPONENTS, TRANSITIONS, loadBrightness, loadCamMode, loadDifficulty, loadFootwork, loadGfxMode, loadIq, loadTrans, saveTrans, type GfxMode, type HudState, type TransId } from './game/Game';
 import { loadSfxProfile, type SfxProfile } from './game/audio';
 import { Menu } from './ui/Menu';
 import { Hud, TouchControls } from './ui/Hud';
@@ -61,6 +61,20 @@ export default function App() {
     gameRef.current?.setIq(n);
   };
 
+  const [gfxLocal, setGfxLocal] = useState<GfxMode>(loadGfxMode);
+  const gfxNow = hud?.gfxMode ?? gfxLocal; // the game is the source of truth
+  const pickGfx = (m: GfxMode) => {
+    setGfxLocal(m);
+    gameRef.current?.setGfxMode(m);
+  };
+
+  const [brightLocal, setBrightLocal] = useState<number>(loadBrightness);
+  const brightNow = hud?.bright ?? brightLocal; // the game is the source of truth
+  const pickBright = (b: number) => {
+    setBrightLocal(b);
+    gameRef.current?.setBrightness(b);
+  };
+
   const [ultra, setUltraState] = useState<boolean>(() => loadDifficulty() === 'ultra');
   const pickUltra = (on: boolean) => {
     setUltraState(on);
@@ -71,6 +85,34 @@ export default function App() {
   const pickSfx = (id: SfxProfile) => {
     setSfxId(id);
     gameRef.current?.setSoundProfile(id);
+  };
+
+  // ---------------------------------------------------------------- the ring transition (see TRANSITIONS in Game.ts)
+  const [transId, setTransId] = useState<TransId>(loadTrans);
+  const [trans, setTrans] = useState<{ id: TransId; run: number } | null>(null);
+  const [dive, setDive] = useState(false);
+  const transRun = useRef(0);
+  const transTO = useRef<number[]>([]);
+  /**
+   * Play one transition. It always runs on the same beat: the overlay covers the screen, the bell (launch) goes
+   * under it, and it opens again on the ring. The page itself dives in on PUNCH ZOOM, and is snapped back while it
+   * is covered, so the arena is revealed at its own scale.
+   */
+  const playTrans = (id: TransId) => {
+    const meta = TRANSITIONS.find((t) => t.id === id) ?? TRANSITIONS[0];
+    for (const t of transTO.current) window.clearTimeout(t);
+    transRun.current += 1;
+    setTrans({ id, run: transRun.current });
+    setDive(id === 'zoom');
+    transTO.current = [
+      window.setTimeout(() => setDive(false), meta.cover),
+      window.setTimeout(() => setTrans(null), meta.cover + meta.open),
+    ];
+  };
+  const pickTrans = (id: TransId) => {
+    setTransId(id);
+    saveTrans(id);
+    playTrans(id);
   };
 
   const [unlocked, setUnlocked] = useState(() => {
@@ -147,9 +189,31 @@ export default function App() {
 
   const phase = hud?.phase ?? 'menu';
   const inMatch = phase === 'walk' || phase === 'intro' || phase === 'fight' || phase === 'ko';
+  // the fps chip turns amber below 57 and red below 45, so a dip is visible at a glance
+  const fpsNow = hud?.fps ?? 60;
+  const fpsColor = fpsNow >= 57 ? '#7dffc4' : fpsNow >= 45 ? '#ffd34a' : '#ff7a7a';
+
+  /** the live FPS readout — it doubles as the graphics-mode switch, so the player can always see and steer the cost */
+  const gfxChip = () => (
+    <button
+      onClick={() => {
+        const i = GFX_MODES.findIndex((m) => m.id === gfxNow);
+        pickGfx(GFX_MODES[(i + 1) % GFX_MODES.length].id);
+      }}
+      className="ghost cut-sm pointer-events-auto flex h-9 items-center gap-1.5 px-2.5 font-tech text-[9px] font-bold tracking-[0.16em]"
+      style={{ color: fpsColor }}
+      title={`Grafis: ${GFX_MODES.find((m) => m.id === gfxNow)?.name ?? 'OTOMATIS'} · ${hud?.gfx ?? ''} — klik untuk ganti`}
+    >
+      <span className="font-display text-[13px] leading-none">{Math.round(hud?.fps ?? 60)}</span>
+      <span className="opacity-75">FPS</span>
+      <span className="hidden opacity-60 sm:inline">· {hud?.gfx ?? 'MAKSIMAL'}</span>
+    </button>
+  );
+
+  const transMeta = trans ? (TRANSITIONS.find((t) => t.id === trans.id) ?? TRANSITIONS[0]) : null;
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-black">
+    <div className={`relative h-full w-full overflow-hidden bg-black ${dive ? 'app-dive' : ''}`}>
       <div ref={mount} className="absolute inset-0" />
       {inMatch && <div className="vignette" />}
 
@@ -170,6 +234,9 @@ export default function App() {
           mode={mode}
           onMode={setMode}
           onStartMode={startMode}
+          trans={transId}
+          onTrans={pickTrans}
+          onTransTry={() => playTrans(transId)}
           sfx={sfxId}
           onSfx={pickSfx}
           ultra={ultra}
@@ -212,6 +279,7 @@ export default function App() {
           ultra={ultra}
           iq={iqNow}
           game={game}
+          onClash={() => playTrans(transId)}
           onReady={() => launch(series)}
           onCancel={() => {
             if (series.mode === 'tournament') setStage('bracket');
@@ -281,6 +349,14 @@ export default function App() {
           onCam={pickCam}
           iq={iqNow}
           onIq={pickIq}
+          gfx={gfxNow}
+          onGfx={pickGfx}
+          fps={hud.fps}
+          tier={hud.gfx}
+          bright={brightNow}
+          onBright={pickBright}
+          trans={transId}
+          onTrans={pickTrans}
           onResume={() => game?.togglePause()}
           onMenu={() => {
             game?.togglePause();
@@ -290,9 +366,13 @@ export default function App() {
         />
       )}
 
-      {/* ---------- utility buttons (pause / sound during match) ---------- */}
+      {/* ---------- the live FPS / graphics chip on the lobby screen ---------- */}
+      {phase === 'menu' && <div className="absolute bottom-3 left-3 z-40 flex gap-2">{gfxChip()}</div>}
+
+      {/* ---------- utility buttons (fps / graphics / pause / sound during match) ---------- */}
       {phase !== 'menu' && (
         <div className="absolute right-3 z-30 flex gap-2" style={inMatch ? (touch ? { top: 78 } : { bottom: 12 }) : { top: 12 }}>
+          {gfxChip()}
           {inMatch && (
             <button
               onClick={() => pickCam((camNow + 1) % CAM_MODES.length)}
@@ -319,6 +399,43 @@ export default function App() {
           >
             <IconSound off={muted} />
           </button>
+        </div>
+      )}
+
+      {/* ---------- the ring transition: the fist clash on the VS screen hands over to the ring walk ---------- */}
+      {trans && transMeta && (
+        <div
+          key={trans.run}
+          className="trans-root"
+          style={{ ['--tr-tot' as string]: `${transMeta.cover + transMeta.open}ms` }}
+          aria-hidden="true"
+        >
+          {trans.id === 'zoom' && (
+            <>
+              <div className="tr-bloom" />
+              <div className="tr-dark" />
+            </>
+          )}
+          {trans.id === 'flash' && (
+            <>
+              <div className="tr-white" />
+              <div className="tr-white-ring" />
+            </>
+          )}
+          {trans.id === 'wipe' && (
+            <>
+              <div className="tr-wipe" />
+              <div className="tr-wipe-edge" />
+              <div className="tr-wipe-line" />
+            </>
+          )}
+          {trans.id === 'shock' && (
+            <>
+              <div className="tr-shockring" />
+              <div className="tr-shockdark" />
+            </>
+          )}
+          {trans.id === 'cut' && <div className="tr-cut" />}
         </div>
       )}
     </div>

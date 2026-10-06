@@ -3,10 +3,11 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { makeGradePass } from './grade';
+import { MeterPass, makeGradePass } from './grade';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { Robot, type Pose, type RobotStyle } from './robot';
 import { ARMOR_SKINS, GLOVE_SKINS, HELMET_SKINS } from './build';
+import type { AnimState } from './robot';
 import { FREESTYLE, fallStages, freestyleByKey, freestylePose, getupFoot, riseArms } from './poses';
 import { buildArena, type Arena } from './arena';
 import { HANGAR_POS, buildHangar, type Hangar } from './hangar';
@@ -29,7 +30,7 @@ import {
 export { CAM_MODES, type CamMode } from './cammath';
 // the strike data + the samplers, exported for the harness that guards them (striketest.mjs): the numbers the test
 // asserts against ARE the numbers the game runs, so a retune can never quietly break the balance rules
-export { MOVES, MOVE_EXTRA, UNBLOCKABLE, TELL, sampleKeys };
+export { MOVES, MOVE_EXTRA, UNBLOCKABLE, TELL, sampleKeys, jabChainSpeed };
 
 // ------------------------------------------------------------------ data
 export type HeroPose = 'ready' | 'stand' | 'guard' | 'victory' | 'taunt' | 'vs' | 'menace';
@@ -200,6 +201,14 @@ export const OPPONENTS: OpponentDef[] = [
   { name: 'VOLT TITAN', title: 'Raksasa Bertenaga Petir', hp: 135, speed: 3.75, dmg: 1.04, react: 0.84, dodge: 0.66, punish: 0.86, adapt: 1.45, aggro: 0.86, rest: 0.48, tscale: 1.05, scale: 1.2, combo: 4, slam: true, color: '#d6ff2a', style: { main: 0xc2a826, secondary: 0x23262d, accent: 0x111111, glow: 0xd6ff2a } },
   { name: 'OMEGA ZEUS', title: 'Juara Dunia Tak Terkalahkan', hp: 150, speed: 3.95, dmg: 1.08, react: 0.9, dodge: 0.72, punish: 0.92, adapt: 1.7, aggro: 0.9, rest: 0.42, tscale: 1.0, scale: 1.22, combo: 5, slam: true, color: '#c070ff', style: { main: 0x3b2370, secondary: 0x15121f, accent: 0xffc83a, glow: 0xb050ff } },
 ];
+// NYAWA LEBIH TEBAL 1.8×. The chassis of every fighter in the WRC is built on this one scale: the player's 100
+// baseline, the roster numbers above, and the Ultra Hard ×1.4 upgrade all end up 1.8× thicker, so the MATCH-UP
+// ratios are exactly what they were — every fight just lasts longer. Chip damage and the guard teardown are
+// absolute numbers, so the practical effect is that a fight is decided by clean hits more than by a slow grind.
+export const HP_SCALE = 1.8;
+/** the actual vitality a fighter is built with: the base number from the roster, scaled. */
+export const hpThick = (base: number) => Math.round(base * HP_SCALE);
+const PLAYER_HP_BASE = 100; // the player's baseline, scaled with everyone else's below
 
 export type Phase = 'menu' | 'walk' | 'intro' | 'fight' | 'ko' | 'matchEnd';
 /**
@@ -224,13 +233,39 @@ interface WalkTrack {
   cue: number; // how many of the strut's crowd cues have fired
   landed: boolean;
   raised: boolean;
-  apex: boolean;
   inward: THREE.Vector2;
   perp: THREE.Vector2;
 }
 const WALK_T = 9.4;
 const FLIGHT_H = 4.5; // how high the centre of mass rises above the straight line take-off → landing
 const COM_H = 3.5; // centre of mass above the feet (× scale): the flip pivots here
+/**
+ * FRONT FLIP — how much of the turn is done at flight progress p (0 → 1 gives 0 → 1; × 2π is the flip angle).
+ * A real tucked front flip is not an ease-in-ease-out: nothing turns while the legs are still driving the wedge,
+ * then the shoulders whip over and the turn rate CLIMBS through the first sixth of the flight (the body extends,
+ * then snaps into the tuck), holds its fastest through the middle — compact, knees on the chest — and only sheds
+ * speed at the end as the body opens and the feet reach down for the canvas. He is still turning when the boots
+ * land: the last of the rotation is what the knees and the crouch absorb. `tuck` is cut from the same curve.
+ */
+const FLIP_RAMP = 0.16; // share of the flight the turn rate takes to reach full speed (the opening of the body)
+const FLIP_HOLD = 0.6; // share of the flight the turn rate stays at its peak (the tuck)
+const FLIP_END = 0.55; // share of the peak rate still left at touch-down (the rotation the landing absorbs)
+const FLIP_NORM = 1 / (FLIP_RAMP * 0.5 + (FLIP_HOLD - FLIP_RAMP) + (1 - FLIP_HOLD) * (1 - (1 - FLIP_END) / 3));
+const flipTurn = (p: number) => {
+  if (p <= 0) return 0;
+  if (p >= 1) return 1;
+  if (p < FLIP_RAMP) {
+    const s = p / FLIP_RAMP;
+    return FLIP_RAMP * (s * s * s - s * s * s * s * 0.5) * FLIP_NORM;
+  }
+  if (p < FLIP_HOLD) return (FLIP_RAMP * 0.5 + (p - FLIP_RAMP)) * FLIP_NORM;
+  // opening out: the turn rate falls off smoothly (no step in the rate = no hitch in the rotation) from full speed
+  // down to FLIP_END of it, which is exactly what untucking does — mass out at the ends, rotation slows for landing
+  const q = (p - FLIP_HOLD) / (1 - FLIP_HOLD);
+  return (FLIP_RAMP * 0.5 + (FLIP_HOLD - FLIP_RAMP) + (1 - FLIP_HOLD) * (q - (1 - FLIP_END) * q * q * q / 3)) * FLIP_NORM;
+};
+const FLIP_IN = 0.07; // the turn starts once the boots have left the wedge (the push-off rides the wedge)
+const FLIP_SPAN = 1 - FLIP_IN; // ...and it is complete exactly as the boots reach the canvas
 /** how far the walkways slide out when the ring is bigger (TEAM MATCH) — see arena.ts setRingScale */
 const entryShift = () => (RING_IN / RING_IN_BASE - 1) * 15.5;
 /** height of the entrance runway under a point at radius r from the ring centre (see arena.ts buildEntrance) */
@@ -290,6 +325,14 @@ export interface HudState {
   helmetSkin?: number;
   gloveSkin?: number;
   armorSkin?: number;
+  /** the live frame rate of the last half-second window */
+  fps?: number;
+  /** the quality rung the picture is running on right now ('MAKSIMAL' … 'RINGAN') */
+  gfx?: string;
+  /** the graphics mode the player pinned ('auto' = the 60 fps governor) */
+  gfxMode?: GfxMode;
+  /** the manual exposure step (0.85 … 1.25) */
+  bright?: number;
   stats?: MatchStats; // the fight sheet shown on the result screen
   /** TEAM MATCH (2v2): the second robot on each side */
   team?: {
@@ -298,8 +341,9 @@ export interface HudState {
   } | null;
 }
 
-type MoveId = 'jab' | 'cross' | 'hook' | 'upper' | 'slam' | 'bolt' | 'windmill' | 'grab' | 'counter';
-const isOD = (id: MoveId) => id === 'slam' || id === 'bolt' || id === 'windmill'; // overdrive moves
+type MoveId = 'jab' | 'cross' | 'hook' | 'upper' | 'slam' | 'bolt' | 'windmill' | 'skyhook' | 'grab' | 'counter';
+// overdrive moves — the four R variants: the straight (bolt), the spinning smash (windmill), the slam and the launcher
+const isOD = (id: MoveId) => id === 'slam' || id === 'bolt' || id === 'windmill' || id === 'skyhook';
 type Ease = 'in' | 'out' | 'io';
 interface Key {
   t: number;
@@ -354,9 +398,11 @@ function createCinematicVignetteTexture(): THREE.CanvasTexture {
   return tex;
 }
 
-const GUARD: Pose = { sx: -0.72, sy: -0.5, sz: 0.04, ex: -2.0 };
+export const GUARD: Pose = { sx: -0.72, sy: -0.5, sz: 0.04, ex: -2.0 };
 const BLOCK: Pose = { sx: -1.0, sy: -0.75, sz: 0, ex: -2.2 };
-const STAGGER: Pose = { sx: -0.25, sy: -0.2, sz: 0.55, ex: -0.7 };
+// dazed, but still a fighter: the hands stay half up in front of the chest (elbows folded) — an arm thrown wide
+// open is a man who has given up on his guard, and he never has
+const STAGGER: Pose = { sx: -0.42, sy: -0.34, sz: 0.34, ex: -1.15 };
 const LIMP: Pose = { sx: 0.1, sy: 0, sz: 0.35, ex: -0.25 };
 const TAUNT: Pose = { sx: -0.3, sy: -0.1, sz: 1.3, ex: -2.3 };
 const VICTORY: Pose = { sx: -3.0, sy: 0, sz: 0.5, ex: -0.3 };
@@ -366,20 +412,26 @@ const k = (t: number, p: Pose, twist = 0, lean = 0.08, lunge = 0, dip = 0.12, e:
 const P = (sx: number, sy: number, sz: number, ex: number): Pose => ({ sx, sy, sz, ex });
 /** sprint arm pose: elbows bent ~100°, fists driving beside the ribs (the robot adds the pumping swing on top) */
 const RUNARM = P(-0.45, -0.2, 0.06, -1.75);
+/** the stance he WALKS on: the fight guard carried with him — fists up at the jaw, elbows tucked over the ribs */
+const WALKG = P(-0.7, -0.62, 0.03, -2.2);
 
 const MOVES: Record<MoveId, Move> = {
   // Every strike is built as: COIL (pull the whole body back the other way) → RELEASE (whip everything through
   // the punch at once) → OVERSHOOT (the rotation keeps going past the target) → SNAP BACK (a short recoil pull)
   // → settle to guard. The overshoot + recoil pair is what makes a punch read as heavy on camera.
   jab: {
-    id: 'jab', arm: 0, dur: 0.56, strikeAt: 0.07, impact: 0.15, cancel: 0.28, dmg: 6, reach: 4.1, cost: 5, stun: 0.5, knock: 3.5, blockMul: 0.15, power: 0.3, hitY: 4.5, step: 1.1, kind: 'front',
+    // THE JAB is the tool the whole style is built on: the longest and fastest of the basic punches, the one that
+    // is meant to be doubled and tripled up, and the cheapest way to charge the Overdrive — it measures the range,
+    // it pokes a guard open, and it never leaves you open. It is still a jab (a 7, not a knockdown), but it is a
+    // jab with a two-ton machine behind it.
+    id: 'jab', arm: 0, dur: 0.55, strikeAt: 0.07, impact: 0.15, cancel: 0.27, dmg: 7, reach: 4.4, cost: 4, stun: 0.55, knock: 4, blockMul: 0.22, power: 0.36, hitY: 4.5, step: 1.35, kind: 'front',
     keys: [
       k(0, GUARD),
       k(0.07, P(-0.34, -0.02, 0.14, -2.7), 0.42, -0.1, -0.34, 0.26, 'out'), // coil back
-      k(0.15, P(-1.68, -0.36, 0, -0.02), -0.78, 0.4, 0.98, 0.06, 'in'), // full extension
-      k(0.21, P(-1.74, -0.36, 0, 0.02), -0.88, 0.44, 1.08, 0.04), // overshoot whip
+      k(0.15, P(-1.76, -0.36, 0, -0.02), -0.8, 0.42, 1.04, 0.06, 'in'), // full extension
+      k(0.21, P(-1.83, -0.36, 0, 0.02), -0.9, 0.46, 1.14, 0.04), // overshoot whip
       k(0.34, P(-1.15, -0.3, 0.12, -0.75), -0.15, 0.18, 0.35, 0.13), // snap back off the target
-      k(0.56, GUARD),
+      k(0.55, GUARD),
     ],
   },
   cross: {
@@ -452,6 +504,26 @@ const MOVES: Record<MoveId, Move> = {
       k(1.48, GUARD),
     ],
   },
+  // OVERDRIVE UPPERCUT (skyhook): the launcher of the set. Everything about it is VERTICAL — he sinks under the
+  // target (hips down, both fists dropped, shoulder loaded below the jaw), then the whole stack unfolds UP through
+  // it in order (hips → knee → torso → shoulder → fist), so the punch arrives from underneath the guard where no
+  // amount of blocking helps. Same family as the other Overdrives (unblockable, meter-priced, cinematic beat) but a
+  // completely different read on screen: it does not cross the ring, it comes up off the canvas.
+  skyhook: {
+    id: 'skyhook', arm: 1, dur: 1.36, strikeAt: 0.44, impact: 0.56, cancel: 99, dmg: 33, reach: 4.2, cost: 0, stun: 1.3, knock: 11, blockMul: 0.5, power: 1, hitY: 5.5, step: 2.8, kind: 'up',
+    keys: [
+      k(0, GUARD),
+      // the sink: he drops under the target's guard, both fists coming down with the hips (deep dip, shoulders over the knees)
+      k(0.26, P(-0.06, 0.5, 0.34, -0.55), -0.85, 0.52, -0.3, 0.98, 'out'),
+      // ...plateau: loaded, still, at the bottom — this is the whole tell, and it needs the beat to read
+      k(0.42, P(-0.03, 0.58, 0.3, -0.5), -1.0, 0.58, -0.36, 1.02, 'io'),
+      // THE LAUNCH: hip, knee, torso, shoulder, fist — one whip UP through the jaw (the fist is at the jaw, body vertical)
+      k(0.56, P(-2.6, -0.45, 0.06, -0.8), 0.92, -0.46, 0.5, -0.14, 'in'),
+      k(0.68, P(-2.78, -0.42, 0.0, -0.62), 1.08, -0.54, 0.6, -0.2), // the overshoot: the punch keeps rising past the target
+      k(0.86, P(-1.72, -0.44, 0.14, -1.3), 0.52, -0.12, 0.38, 0.14), // recoil, the guard already closing
+      k(1.36, GUARD),
+    ],
+  },
   grab: {
     id: 'grab', arm: 2, dur: 1.25, strikeAt: 0.1, impact: 0.3, cancel: 99, dmg: 20, reach: 3.5, cost: 14, stun: 1, knock: 8, blockMul: 1, power: 0.85, hitY: 3.6, step: 1.4, kind: 'front',
     keys: [
@@ -500,8 +572,219 @@ const MOVE_EXTRA: Record<MoveId, { width: number; launch: boolean; unblock: bool
   slam: { width: 5.0, launch: true, unblock: false },
   bolt: { width: 1.55, launch: true, unblock: false },
   windmill: { width: 2.2, launch: true, unblock: true },
+  skyhook: { width: 2.4, launch: true, unblock: true },
   grab: { width: 2.4, launch: true, unblock: true },
   counter: { width: 1.7, launch: false, unblock: false },
+};
+
+// ------------------------------------------------------------------ THE VS FIST CLASH
+/**
+ * THE FIST CLASH ON THE VS SCREEN. In the last two seconds of the lock-in count both machines throw a full-power
+ * right hand at each other and lock fists in the middle of the frame — an Overdrive-weight collision, not a tap.
+ *
+ * BOTH MACHINES THROW THEIR RIGHT HAND. On this rig arm index 1 is the right one: the model is built facing +z
+ * (its boots sit heel −z, toe +z), so at yaw 0 the right-hand side is −x — and that is exactly where arm 1 hangs
+ * (clashtest.mjs §4 asserts it on the rig, then asserts that BOTH sides hand `arm: 1` to the animator). The player's
+ * machine stands on the LEFT of the frame, so for his right hand to reach the middle the whole torso turns into the
+ * punch — a real cross — while the opponent, standing on the right, throws the same right hand straight down the
+ * line.
+ *
+ * THE FISTS MEET IN THE MIDDLE AND NEVER CROSS IT. This is the whole trick of the pose, and it is measured, not
+ * eyeballed: each glove stops on ITS OWN side of the centre line (clashtest.mjs §2 walks every vertex of both glove
+ * meshes on every frame). An earlier version had both fists swing THROUGH the middle — each glove ended up over the
+ * opponent's half of the frame, so the two machines read as swapping arms and the meshes had to be threaded past
+ * each other with millimetres to spare. Stopping each knuckle just short of the centre line is what makes the pose
+ * read as a clash, and it is also what makes it physically safe: the closest pair of vertices is the two knuckles,
+ * touching across the middle.
+ *
+ * THE TRACK IS ALIVE, NOT A HELD PHOTOGRAPH. Both machines are fully loaded exactly as the "2" lands (the deepest
+ * point of the coil), and they stay loaded right through the count — but the hold is not a still frame: a procedural
+ * layer (see `clashStateFrom`) keeps pressing and pulling against the load, sinking a hair, trembling on the servos,
+ * and the torso keeps winding. After the hit the same layer flips into the grind: the two machines surge against
+ * each other, glove to glove, until the transition covers the shot.
+ *
+ * AND THE WHOLE MACHINE THROWS, NOT JUST THE ARM: weight goes forward (lunge), the rear foot re-plants on the
+ * release (punchFoot), the chest unwinds through the punch (twist), the head tracks the opponent (head), and the
+ * optics charge all the way through the coil and BLOW OUT on the exact frame the knuckles meet (strike → 1).
+ */
+export const VS_CLASH_AT = 0.45; // s into the 3-second lock-in count: the coil STARTS here ("3" is on screen)
+export const VS_CLASH_HIT = 1.55; // the frame the fists meet (1.55 + 0.45 = 2.00 s = exactly the "1")
+export const VS_CLASH_AT_HIT = VS_CLASH_AT + VS_CLASH_HIT; // → 2.00 s
+export const VS_CLASH_DUR = 2.05; // the whole clash; past the hit the lock is HELD until the transition covers it
+export const VS_CLASH_REL = 1.25; // s: the throw is released here — 0.30 s of travel into the lock-out
+// HOW FAR EACH MACHINE TURNS to square up on its opponent as it loads (rad). They are not equal: the player throws
+// a cross, which already carries his chest around, while the opponent throws a straight — these two numbers are the
+// measured pair that leaves BOTH chests facing the other machine (clashtest.mjs §2 measures the facing angle).
+export const VS_CLASH_SQUARE_HERO = 0.86;
+export const VS_CLASH_SQUARE_FOE = 0.55;
+/** the opponent's straight right: the shape of the throw both machines share. */
+export const VS_CLASH_KEYS: Key[] = [
+  //         shoulder pitch / yaw / roll / elbow          twist   lean    lunge   dip    ease
+  k(0.00, P(-0.55, -0.30, 0.30, -2.20), -0.06, -0.06, -0.04, 0.17, 'io'), // the fist cocks back, the body sinks
+  k(0.30, P(-0.34, -0.42, 0.38, -2.44), -0.10, -0.16, -0.08, 0.22, 'io'), // the weight rolls onto the back foot
+  k(0.55, P(-0.24, -0.50, 0.42, -2.50), -0.12, -0.22, -0.10, 0.26, 'io'), // FULLY LOADED exactly as the "2" lands
+  k(1.05, P(-0.26, -0.49, 0.42, -2.49), -0.11, -0.20, -0.08, 0.25, 'io'), // ...and HELD, straining, through the "2"
+  // THE OPPONENT'S RIGHT HAND — the hand facing the middle, and the one that lands the "1". He holds the load a
+  // beat longer than the player and then fires the straight in one burst, so the two fists are never in the same
+  // volume on the way out: the player is already parked on the patch and he closes the last half metre into it.
+  k(1.30, P(-0.28, -0.50, 0.44, -2.51), -0.12, -0.24, -0.09, 0.27, 'io'), // ...the very last sink
+  k(1.55, P(-1.65, 0.60, 0.30, -0.12), 0.62, 0.34, 0.34, 0.16, 'in'), // THE STRAIGHT LANDS on the "1"
+  k(1.77, P(-1.65, 0.60, 0.30, -0.12), 0.62, 0.34, 0.46, 0.16, 'io'), // the push — he drives INTO the lock...
+  k(2.05, P(-1.65, 0.60, 0.30, -0.12), 0.62, 0.34, 0.44, 0.16, 'io'), // ...and holds it until the shot is covered
+];
+/** the player's track. He throws the SAME cross the fight ships, but here it is the right hand, across his own
+ *  chest — and both machines LOAD FOR A FULL SECOND before the "1": the coil is already at full depth when the "2"
+ *  lands, and it is held there (with the body straining against it) until the release.
+ *  The three lock-out keys are IDENTICAL in every channel on purpose: past the hit the two machines push against
+ *  each other instead of the pose drifting — the live press comes from the procedural layer in clashStateFrom. */
+export const VS_CLASH_KEYS_CROSS: Key[] = [
+  k(0.00, P(-0.55, -0.26, 0.32, -2.20), -0.05, -0.06, -0.04, 0.17, 'io'),
+  k(0.30, P(-0.32, -0.20, 0.40, -2.42), -0.02, -0.14, -0.08, 0.22, 'io'),
+  k(0.55, P(-0.22, -0.14, 0.46, -2.48), 0.02, -0.20, -0.10, 0.26, 'io'), // FULLY LOADED exactly as the "2" lands
+  k(1.10, P(-0.24, -0.14, 0.46, -2.47), 0.04, -0.18, -0.08, 0.25, 'io'), // held, straining, through the "2"
+  k(1.16, P(-0.26, -0.16, 0.48, -2.50), 0.05, -0.22, -0.10, 0.28, 'io'), // the last sink before the release
+  // ...and the cross is OUT on the contact patch before the opponent's fist arrives: he throws LAST, into the
+  // player's glove, and the "1" is the sound of him landing on it. Ordering matters for more than drama — a glove
+  // that arrives second at 30 m/s sweeps THROUGH a glove that is already parked (measured: 8 mm between the meshes
+  // at 1.50 s one way round, 528 vertices inside the other way round; clashtest.mjs §2 casts the rays).
+  k(1.40, P(-1.80, 0.20, 0.32, -0.12), 0.62, 0.34, 0.30, 0.16, 'in'),
+  k(1.55, P(-1.80, 0.20, 0.32, -0.12), 0.62, 0.34, 0.32, 0.16, 'io'), // THE FISTS MEET on the "1"
+  k(1.77, P(-1.80, 0.20, 0.32, -0.12), 0.62, 0.34, 0.44, 0.16, 'io'), // the lock HOLDS, glove to glove...
+  k(2.05, P(-1.80, 0.20, 0.32, -0.12), 0.62, 0.34, 0.42, 0.16, 'io'), // ...until the transition covers the shot
+];
+/** one side's clash pose, sampled: the arms, the body channels and the show — THE numbers the game runs. */
+export interface ClashPose {
+  arm: 0 | 1; // 1 = the machine's RIGHT hand
+  arms: [Pose, Pose];
+  twist: number;
+  lean: number;
+  dip: number;
+  roll: number;
+  glow: number;
+  lunge: number; // weight forward onto the front foot (drives the stance + the hips)
+  strike: number; // 0..1 optics charge: reaches exactly 1 on the frame the knuckles meet (fires the eye flare)
+  pow: number; // how heavy that release is (drives the size of the optical flash)
+  lookX: number; // gaze target, robot-local (− = towards his own right, which is where the opponent is)
+  lookY: number;
+  yaw: number; // extra root yaw (rad): the machine TURNS to square up as it loads, so it faces its opponent
+  head: number; // extra head turn (rad): keeps his face on the opponent through the cross
+  punch: number; // -1 = no re-plant, else the foot that steps into the punch (1 = the rear / right foot)
+  punchSeq: number; // a new number per clash = exactly one re-plant per throw
+  charge: number; // 0..1 FX: the energy building around the fists before the hit (sparks start spitting)
+  grind: number; // 0..1 FX: the push after the hit (sparks grinding off both knuckles)
+  shock: number; // 0..1 FX: the impact flash envelope
+}
+/**
+ * THE LIVE POSE OF ONE MACHINE, at clash time `t`. The keys give the shape; this adds the layer that keeps the pose
+ * breathing — a machine that is loaded to its limit does not stand still, it strains: it presses and gives, sinks a
+ * hair deeper, buzzes on its servos, and after the hit it drives into the other machine and grinds there. Every
+ * term is a pure function of `t`, so the test harness measures exactly what the game plays.
+ */
+export const clashStateFrom = (keys: Key[], side: 'hero' | 'foe', t: number, seq = 1): ClashPose => {
+  const s = sampleKeys(keys, t);
+  const shock = Math.max(0, 1 - Math.abs(t - VS_CLASH_HIT) / 0.14); // the flare at the instant they meet
+  const grind = t > VS_CLASH_HIT ? Math.min(1, (t - VS_CLASH_HIT) / 0.12) : 0; // the push after it
+  const charge = Math.min(1, Math.max(0, (t - 0.25) / 1.0)) * (1 - shock); // the build-up before it
+  // THE HOLD IS ALIVE. Two slow waves (a press and a settle) plus one fast servo buzz, windowed onto the long coil
+  // and onto the grind after the hit — small enough that the gloves keep the clearance the tests measure.
+  const hold = t > 0.5 && t < VS_CLASH_REL ? Math.min(1, (t - 0.5) / 0.18) : 0;
+  const press = Math.sin(t * 6.1);
+  const surge = Math.sin(t * 9.4);
+  const buzz = Math.sin(t * 47.3) + Math.sin(t * 63.7) * 0.55;
+  const live = hold + grind;
+  const strain = press * (hold * 0.012 + grind * 0.010) + surge * grind * 0.008 + buzz * live * 0.004;
+  const sink = (1 - Math.cos(press * 0.5)) * hold * 0.004 + (0.5 - 0.5 * Math.cos(surge)) * grind * 0.006;
+  const face = Math.min(1, Math.max(0, t / VS_CLASH_HIT)); // 0..1 through the coil and the throw
+  const square = face * face * (3 - 2 * face); // the machines turn to square up as they load, and hold it
+
+  const rel = Math.min(1, Math.max(0, (t - VS_CLASH_REL) / (VS_CLASH_HIT - VS_CLASH_REL)));
+  const strike = t >= VS_CLASH_HIT ? 1 : Math.min(0.999, 0.22 + 0.30 * Math.min(1, t / 0.9) + 0.62 * rel);
+  // THE OPPONENT IS THE MIRROR IMAGE of the player's machine: same cross, thrown with the same right hand, but
+  // every lateral channel of the arm (shoulder yaw `sy`, shoulder roll `sz`) flips — that is what makes the two
+  // bodies true reflections of each other, chest to chest, with their gloves meeting in the middle.
+  const mir = side === 'foe' ? -1 : 1;
+  return {
+    arm: 1, // BOTH machines throw their RIGHT hand (see the note above)
+    arms: [
+      // the guard hand stays up, breathes with the load and shrugs on the shock
+      { ...GUARD, sx: GUARD.sx - 0.10 * shock + strain * 0.5, sy: mir * (GUARD.sy + sink * 1.2), sz: mir * GUARD.sz, ex: GUARD.ex + strain * 0.6 },
+      { ...s.p, sx: s.p.sx + strain * 0.55, sy: mir * s.p.sy, sz: mir * s.p.sz, ex: s.p.ex + strain * 0.7 },
+    ],
+    twist: (side === 'foe' ? -s.twist : s.twist) + strain * 0.55,
+    lean: s.lean + strain * 0.30 + sink * 0.5,
+    dip: s.dip + sink,
+    roll: (side === 'foe' ? -1 : 1) * buzz * live * 0.005 + strain * 0.06,
+    glow: 0.45 + 0.5 * charge + 1.15 * shock + grind * 0.35,
+    yaw: (side === 'hero' ? VS_CLASH_SQUARE_HERO : VS_CLASH_SQUARE_FOE) * square,
+    lunge: s.lunge + grind * 0.03,
+    strike,
+    pow: 0.95,
+    // the gaze: the opponent is off to this machine's own right (he is punching across the frame), chin height
+    lookX: (side === 'hero' ? -1 : 1) * (0.35 + 0.35 * Math.min(1, t / 1.2)),
+    lookY: 0.10,
+    // ...and the face follows the fists: the chest unwinds under the head, so the neck has to unwind back the
+    // other way — the numbers below put BOTH faces on the opponent's glove (clashtest.mjs §3 measures the angle).
+    head: side === 'hero' ? 0.24 + 0.46 * face : -(0.20 - 0.10 * face),
+    punch: t >= VS_CLASH_REL ? 1 : -1,
+    punchSeq: seq,
+    charge,
+    grind,
+    shock,
+  };
+};
+/** the LIVE clash pose for a side: the player throws the cross, the opponent the straight. */
+export const vsClashState = (side: 'hero' | 'foe', t: number, seq = 1): ClashPose =>
+  clashStateFrom(side === 'hero' ? VS_CLASH_KEYS_CROSS : VS_CLASH_KEYS, side, t, seq);
+/**
+ * WHERE THE TWO FISTS ACTUALLY MEET: the mid-point between the two glove centres at the hit, measured on the rig
+ * with the real tracks (clashtest.mjs §3b measures it too, and fails if this point drifts more than a few
+ * centimetres off them). The impact flash, the shock ring and the sparks are drawn HERE, and the clash camera aims
+ * its look onto it — so the light is always on the contact patch, not near it.
+ */
+export const VS_CLASH_POINT = { x: 1.10, y: 5.38, z: 1.02 }; // the measured midpoint of the closest vertex pair when the count says "1"
+
+// ------------------------------------------------------------------ THE TRANSITION (menu → ring) SETTING
+/**
+ * HOW THE LOBBY HANDS OVER TO THE RING. The clash is the last thing you see on the VS screen; the transition is
+ * what covers the cut from that shot into the ring walk. Every one of them plays over the SAME beat — the overlay
+ * covers the screen, the match is launched underneath it, the overlay opens again on the arena — so switching this
+ * setting can never change WHEN the fight starts, only how it is dressed.
+ */
+export type TransId = 'zoom' | 'flash' | 'wipe' | 'shock' | 'cut';
+export interface TransMeta {
+  id: TransId;
+  name: string;
+  hint: string;
+  /** ms until the screen is fully covered (and how long it STAYS covered). The bell goes at 1000 ms
+   *  (the lock-in count is 3 s and the clash fires on the "1"), so every kind covers well before that. */
+  cover: number;
+  /** ms of the reveal on the far side, on top of the cover */
+  open: number;
+}
+/** the beat between the fist clash and the bell: the transition has to have covered the screen by then */
+export const TRANS_COVER_LEAD = 1000;
+export const TRANSITIONS: TransMeta[] = [
+  { id: 'zoom', name: 'PUNCH ZOOM', hint: 'zoom ke adu tinju lalu gelap, masuk ring', cover: 1080, open: 620 },
+  { id: 'flash', name: 'FLASH PUTIH', hint: 'hentakan jadi kilat putih, pecah ke arena', cover: 1080, open: 760 },
+  { id: 'wipe', name: 'WIPE BAJA', hint: 'pelat baja menyapu layar kiri ke kanan', cover: 1080, open: 620 },
+  { id: 'shock', name: 'GELOMBANG', hint: 'cincin hentakan melebar, gelap, lalu pulih', cover: 1080, open: 700 },
+  { id: 'cut', name: 'HARD CUT', hint: 'tanpa transisi — hentakan langsung ke ring', cover: 90, open: 130 },
+];
+const LS_TRANS = 'steel-titans-transition-v1';
+export const loadTrans = (): TransId => {
+  try {
+    const v = localStorage.getItem(LS_TRANS) as TransId | null;
+    return v && TRANSITIONS.some((t) => t.id === v) ? v : 'zoom';
+  } catch {
+    return 'zoom';
+  }
+};
+export const saveTrans = (id: TransId) => {
+  try {
+    localStorage.setItem(LS_TRANS, id);
+  } catch {
+    /* ignore */
+  }
 };
 const GRAVITY = 34;
 
@@ -522,11 +805,11 @@ const poiseCost = (power: number) => 8 + power * 22; // jab ≈ 15, cross ≈ 20
  * the start of the warning and the moment the strike lands (≈ 0.6–1.0 s in total) and the attack cannot hit you.
  * Unblockable / heavy moves (grab, Overdrive) get the longest warning.
  */
-const TELL: Record<MoveId, number> = { jab: 0.48, cross: 0.55, hook: 0.6, upper: 0.62, grab: 0.68, slam: 0.9, bolt: 0.9, windmill: 0.92, counter: 0.5 };
+const TELL: Record<MoveId, number> = { jab: 0.48, cross: 0.55, hook: 0.6, upper: 0.62, grab: 0.68, slam: 0.9, bolt: 0.9, windmill: 0.92, skyhook: 0.92, counter: 0.5 };
 const TELL_CHAIN = 0.2; // follow-up hits in a combo or counter flow fast while staying readable to the human eye
-const UNBLOCKABLE: MoveId[] = ['grab', 'slam', 'bolt', 'windmill']; // shown with a RED indicator, like God of War's unblockable attacks
+const UNBLOCKABLE: MoveId[] = ['grab', 'slam', 'bolt', 'windmill', 'skyhook']; // shown with a RED indicator, like God of War's unblockable attacks
 // how much a strike re-aims at the opponent's *current* position when it launches (1 = homing)
-const TRACK: Record<MoveId, number> = { jab: 0.35, cross: 0.42, hook: 0.9, upper: 0.55, slam: 0.5, bolt: 0.25, windmill: 0.42, grab: 0.52, counter: 0.45 };
+const TRACK: Record<MoveId, number> = { jab: 0.35, cross: 0.42, hook: 0.9, upper: 0.55, slam: 0.5, bolt: 0.25, windmill: 0.42, skyhook: 0.4, grab: 0.52, counter: 0.45 };
 
 /**
  * HOW THE AI MEETS A MOVE. Blocking is the right answer to most punches, but anything that comes down a STRAIGHT
@@ -539,6 +822,7 @@ export const defenceAgainst = (id: MoveId, dodge: number): 'block' | 'side' | 'b
   if (id === 'slam') return Math.random() < 0.7 ? 'back' : 'side';
   if (id === 'bolt') return Math.random() < 0.65 ? 'side' : 'back'; // a straight: sidestepping it is the answer
   if (id === 'windmill') return Math.random() < 0.65 ? 'side' : 'back';
+  if (id === 'skyhook') return Math.random() < 0.6 ? 'back' : 'side'; // the launcher comes UP: give ground or clear the line
   if (id === 'counter') return Math.random() < 0.7 ? 'side' : 'back'; // the counter straight is the same punch
   if (id === 'hook') return Math.random() < dodge ? 'back' : 'block'; // wide sweep: a sidestep cannot clear it
   if (id === 'upper') return Math.random() < dodge * 0.8 ? 'back' : 'block';
@@ -553,6 +837,24 @@ export const defenceAgainst = (id: MoveId, dodge: number): 'block' | 'side' | 'b
  * real strike that has to come out fast; you have to already be throwing it when the punch arrives.
  */
 const PARRY_ACTIVE = 0.3; // = the move's strikeAt: the whole wind-up is the catch window
+
+/**
+ * THE JAB RHYTHM (see startMove). A jab fired inside this window of the previous one is part of a chain: each
+ * link makes the next jab up to JAB_CHAIN_STEP faster, capped at JAB_CHAIN_MAX links. It is the boxing 1-1-1-1:
+ * the first jab measures the range, and by the fourth the machine gun is open — while any other punch, or a
+ * beat of footwork longer than the window, resets it.
+ */
+const JAB_CHAIN_WIN = 0.62; // s — the jab's own length plus a little; longer than this is not a chain
+const JAB_CHAIN_STEP = 0.075; // +7.5 % per link
+const JAB_CHAIN_MAX = 4; // ...up to +30 %
+const jabChainSpeed = (chain: number) => 1 + JAB_CHAIN_STEP * THREE.MathUtils.clamp(Math.round(chain), 0, JAB_CHAIN_MAX);
+
+/**
+ * Overdrive meter a clean hit banks for the attacker. Every punch charges it, but the JAB — the cheapest and
+ * fastest punch in the book — charges it at close to double rate, so poking the guard IS how you fill the meter.
+ * Exported (like defenceAgainst) so `striketest.mjs` can assert the economy instead of trusting the reader.
+ */
+export const meterGainFor = (id: MoveId, dmg: number, ultra = false) => dmg * 1.3 * (id === 'jab' ? 1.85 : 1) * (ultra ? 1.5 : 1);
 
 /**
  * WHERE YOU AIM. A tap on SPACE (or T) switches the point of impact between the HEAD and the BODY, and every
@@ -671,7 +973,8 @@ class Fighter {
   ropeW = 0; // smoothed "on the ropes" weight for the pose (fast in, slow out)
   ropeBack = 1; // smoothed: +1 = the ropes are at his back (draped over them), -1 = he ran into them chest first
   slingT = 0; // ROPE CATAPULT: time until the stretched ropes fling him back into the ring
-  slingV = 0; // speed of that fling
+  slingV = 0; // ...and how hard they may throw him
+  slingIn = 0; // the speed he actually hit them with: a rope can NEVER return more than it was given
   slingX = 0; // its direction (unit, towards the ring)
   slingZ = 0;
   fallS = new Spring();
@@ -729,6 +1032,8 @@ class Fighter {
   rageFlash = 0; // > 0 while the Rage Mode badge flashes on HUD
   strikeVar = 0; // 0..3 biomechanical punch variation index so spam never looks monotonous
   spamCount = 0; // consecutive rapid attacks counter for natural flow & rhythm
+  jabChain = 0; // JAB RHYTHM: how many jabs have been thrown inside the chain window (each one tightens the next)
+  lastJabAt = -10; // animT of the previous jab
   lastAtkAt = -10; // animT of previous attack
   aliSign = 1; // alternating weave direction for Muhammad Ali pendulum dodges
   dodgeTail = 0; // smooth post-dodge follow-through timer so springs & poses never snap at dodge end
@@ -837,6 +1142,8 @@ class Fighter {
     this.ropeW = 0;
     this.ropeBack = 1;
     this.slingT = 0;
+    this.slingIn = 0;
+    this.slingT = 0;
     this.slingV = 0;
     this.acc.set(0, 0);
     this.prevV.set(0, 0);
@@ -896,6 +1203,8 @@ class Fighter {
     this.rageFlash = 0;
     this.strikeVar = 0;
     this.spamCount = 0;
+    this.jabChain = 0;
+    this.lastJabAt = -10;
     this.lastAtkAt = -10;
     this.aliSign = 1;
     this.dodgeTail = 0;
@@ -927,6 +1236,24 @@ const BODY_R = 0.9; // how far the back of the chest / upper back sits behind th
 const FLEX = 0.95; // how far the ropes can stretch before they hold
 const ROPE_K = 105; // rope stiffness
 const ROPE_C = 9.5; // rope damping (slightly under-damped → a soft, small rebound)
+// HOW FAST THE ROPES MAY PUSH A BODY. The multi-point containment of a lying / flying machine used to apply its
+// whole correction in one frame, so a body that fell near the ropes was SNAPPED up to three metres inwards (the
+// "pindah" glitch). A rope pushes: the correction is now applied as motion at these speeds, never as a jump —
+// it resolves in a few frames and reads as the body sliding off the rope instead of teleporting through the ring.
+const ROPE_SHOVE = 9; // m/s — how fast an end that is through the rope is eased back in
+const ROPE_STOP = 18; // m/s — the hard stop against a fully stretched rope, also spread over frames
+// THE ROPE RULES, as pure numbers — the game applies these, and striketest.mjs §6 holds them to account.
+// A body that is through the rope line is eased back in as MOTION: the most any single frame may move it is
+// ropeInwardStep(dt), and a frame hitch cannot buy extra travel because dt itself is capped inside the step. That
+// capped step is the whole fix for the "pindah" glitch: the old containment applied its entire correction at once,
+// which is why a body lying near the ropes could be snapped metres across the ring in one frame.
+export const ropeInwardStep = (dt: number) => ROPE_SHOVE * Math.min(dt, 1 / 30);
+/** How far the absolute (fully stretched) rope may take back in ONE frame — same frame-hitch cap. */
+export const ropeHardStep = (dt: number) => ROPE_STOP * Math.min(dt, 1 / 30);
+/** The speed a rope sling may throw a body back into the ring at: at most what it arrived with, never a launcher. */
+export const ropeSlingSpeed = (pull: number, vIn: number) => Math.min(5 + pull * 7.5, Math.max(3, vIn * 0.85));
+/** Damping so a rebound may never leave the ropes faster (inwards) than it arrived — ropes give back, never add. */
+export const ropeEnergyDamp = (inW: number, vIn: number) => (inW > vIn && inW > 0.001 ? vIn / inW : 1);
 const TIP_LEN = 6.0; // height of a robot, used for its fall footprint
 const RING_BASE = 11.9;
 let RING = RING_BASE; // TEAM MATCH grows the ring (see Game.setRingScale)
@@ -945,6 +1272,66 @@ const ROUND_TIME = 75;
 const INTRO_T = 3.4; // ROUND card → both machines taunt → 3 · 2 · 1 → FIGHT!
 const INTRO_TAUNT_AT = 0.45; // when both fighters kick off their pre-fight show-off
 const INTRO_COUNT = [0.95, 1.75, 2.55]; // when the 3 · 2 · 1 cards drop
+
+// ------------------------------------------------------------------ THE GRAPHICS LADDER
+/**
+ * The picture is meant to look like this on purpose, and it is meant to hold 60 every second of the fight. Five
+ * rungs, each one giving up exactly one thing — the hall reflection, the MSAA samples, the render scale, the
+ * shadow map — so the fall from MAKSIMAL to RINGAN is a soft one and every rung still looks like the same show.
+ */
+export interface QualityTier {
+  key: string;
+  name: string;
+  /** the glossy floors: 2 = the canvas AND the hall, 1 = the canvas only, 0 = matte */
+  mirror: 0 | 1 | 2;
+  /** multisample count on the HDR scene target (0 = none — the FXAA in the grade pass still cleans the edges) */
+  samples: number;
+  /** render scale, multiplied onto the device pixel ratio cap */
+  scale: number;
+  /** shadow map size for the key light */
+  shadow: number;
+  /** the cinematic bloom pass on/off... */
+  bloom: boolean;
+  /** ...and the resolution of its mip chain, as a fraction of the frame */
+  bloomScale: number;
+}
+export const QUALITY_TIERS: QualityTier[] = [
+  { key: 'max', name: 'MAKSIMAL', mirror: 2, samples: 4, scale: 1.0, shadow: 2048, bloom: true, bloomScale: 0.5 },
+  { key: 'high', name: 'TINGGI', mirror: 2, samples: 2, scale: 1.0, shadow: 2048, bloom: true, bloomScale: 0.5 },
+  { key: 'balanced', name: 'SEIMBANG', mirror: 1, samples: 2, scale: 1.0, shadow: 1536, bloom: true, bloomScale: 0.34 },
+  { key: 'performance', name: 'KINERJA', mirror: 0, samples: 0, scale: 0.88, shadow: 1024, bloom: true, bloomScale: 0.25 },
+  { key: 'lite', name: 'RINGAN', mirror: 0, samples: 0, scale: 0.72, shadow: 1024, bloom: false, bloomScale: 0.25 },
+];
+
+export type GfxMode = 'auto' | 'max' | 'balanced' | 'performance';
+export const GFX_MODES: { id: GfxMode; name: string; hint: string }[] = [
+  { id: 'auto', name: 'OTOMATIS', hint: '60 fps dipegang otomatis' },
+  { id: 'max', name: 'MAKSIMAL', hint: 'semua efek, paling indah' },
+  { id: 'balanced', name: 'SEIMBANG', hint: 'cantik & ringan' },
+  { id: 'performance', name: 'KINERJA', hint: 'paling lancar' },
+];
+const LS_GFX = 'steel-titans-graphics-v1';
+const LS_BRIGHT = 'steel-titans-brightness-v1';
+/** the manual exposure steps. 1.0 is the tuned picture; the two either side are for a bright room and a dark one. */
+export const BRIGHTNESS_STEPS = [0.85, 0.95, 1.0, 1.12, 1.25] as const;
+export const loadBrightness = (): number => {
+  try {
+    const v = Number(localStorage.getItem(LS_BRIGHT));
+    return (BRIGHTNESS_STEPS as readonly number[]).includes(v) ? v : 1.0;
+  } catch {
+    return 1.0;
+  }
+};
+/** the pinned graphics mode from last time ('auto' = let the governor hold 60 by itself) */
+export const loadGfxMode = (): GfxMode => {
+  try {
+    const v = localStorage.getItem(LS_GFX) as GfxMode | null;
+    return v && GFX_MODES.some((m) => m.id === v) ? v : 'auto';
+  } catch {
+    return 'auto';
+  }
+};
+const gfxTier = (m: GfxMode): number => (m === 'max' ? 0 : m === 'balanced' ? 2 : m === 'performance' ? 3 : 0);
 
 export class Game {
   private container: HTMLElement;
@@ -1005,15 +1392,35 @@ export class Game {
   private smoothVelE = new THREE.Vector2();
   private fpsEma = 16;
   private fpsT = 0;
-  private quality = 1.0;
+  private fps = 60; // the measured frame rate of the last sample window (shown on the HUD)
+  private frames = 0; // frames in the window...
+  private longFrames = 0; // ...and how many of them missed the 60 Hz beat
+  private dprCap = 1.5; // the device pixel ratio this screen is allowed to render at (see bootDprCap)
+  private quality = 1.0; // the render scale of the CURRENT tier
   private mirrorsOn = true;
+  private hallMirrorOn = true;
   // THE QUALITY LADDER: the frame budget is a locked 60. Each rung (0 = everything on) trades one thing for speed —
-  // the floor reflections, the multisample count, the render scale — and the governor climbs back up when the
-  // frame time has been solid for a while, never retrying a rung that already failed.
+  // the floor reflections, the multisample count, the render scale, the shadow map — and the governor climbs back up
+  // when the frame time has been solid for a while, never retrying a rung that already failed.
   private qTier = 0;
+  private qAuto = true; // false = the player pinned a tier from the graphics menu
+  private qMode: GfxMode = 'auto';
   private qTierFailed = -1;
   private qSteady = 0;
   private qCooldown = 0;
+  private qWarm = 2.2; // seconds of grace at boot: shader compilation and the first uploads are not the GPU's fault
+  // THE AUTO-EXPOSURE: the frame's own brightness drives the grade's exposure, the way a broadcast camera rides its
+  // iris. It is deliberately slow (about a second to settle) and its range is small — it cannot rescue a scene that
+  // was badly lit, it only keeps a hard-strobing rig, a flash or a bloom surge from blowing the picture out.
+  private meter: MeterPass;
+  private aeDead = false; // the readback failed on this driver: stop asking for it
+  private aeFrames = 0; // frames since the last readback (the GPU is at least a frame behind)
+  private aeBuf = new Uint8Array(4);
+  private aeKey = 0.28; // display-referred: 0.26 ≈ a normally exposed frame, 0.5 = running hot
+  private aeGain = 1;
+  private aeHold = 0; // paused while a cinematic flash / white-out is on screen (a strobe is not an exposure)
+  private aePause = 0;
+  private bright = 1.0; // the manual exposure step from the graphics panel (the auto-exposure never fights it)
   private enemyCache = new Map<number, Fighter>();
   private flashAmt = 0;
   private hype = 0;
@@ -1029,6 +1436,9 @@ export class Game {
   private raf = 0;
   private last = performance.now();
   private popupLayer: HTMLDivElement;
+  // HIT TEXT LIVES IN ONE COLUMN: every popup (damage numbers, COUNTER!/MISS/SLIP!/ROPE BOUNCE!) is anchored
+  // to the LEFT edge and stacked into lanes, so the numbers never cover the two fighters again.
+  private popLanes: number[] = [0, 0, 0, 0, 0];
   private flashEl: HTMLDivElement;
   private warnEl: HTMLDivElement; // God-of-War-style attack indicator (a ring that shrinks onto a button prompt)
   private warnRing: HTMLElement;
@@ -1085,6 +1495,17 @@ export class Game {
   /** the VS screen: the opponent (and the 2v2 partner) standing opposite the hero in the hangar */
   private vs: { idx: number; idx2: number; stage: 'search' | 'found' | 'lock' } | null = null;
   private vsPunch = 0; // the lens punch-in on the reveal / the lock, decays
+  // THE FIST CLASH (see VS_CLASH_KEYS): vsLockT drives the lock-in count, vsClash runs the clash track,
+  // vsShake is the impact ring-down that lets the lobby camera shake for a beat (normally it never does).
+  private vsLockT = 0;
+  private vsClash = -1;
+  private vsClashHit = false;
+  private vsShakeT = 0;
+  private vsKick = 0; // 0..1 lens dive as the fists meet
+  private vsSeq = 1; // clash id: every fresh clash re-plants the rear foot exactly once (see vsClashAnim)
+  private vsSparkT = 0; // FX cadence for the coil crackle / the grind sparks
+  private vsWhoosh = false; // one throw = one whoosh
+  private vsRingT = 0; // FX cadence for the grind pressure rings
   private vsFoe: Fighter | null = null;
   private vsFoe2: Fighter | null = null;
   private menuHeroPedestal: THREE.Group;
@@ -1102,21 +1523,29 @@ export class Game {
   constructor(container: HTMLElement, onHud: (h: HudState) => void) {
     this.container = container;
     this.onHud = onHud;
+    this.qMode = loadGfxMode();
+    this.qAuto = this.qMode === 'auto';
+    this.bright = loadBrightness();
 
-    // anti-aliasing lives on the composer's multisampled target (the whole frame goes through the grade pass), so
-    // the default framebuffer stays single-sampled — no second MSAA resolve of the final quad every frame
-    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', stencil: false });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.quality));
+    // anti-aliasing: a light 2× MSAA on the composer's HDR target for the long geometry edges, plus the compact
+    // FXAA inside the grade pass for everything the samples miss. The HDR target is where the frame goes through
+    // the grade, so the default framebuffer stays single-sampled — no second MSAA resolve every frame.
+    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', stencil: false, depth: true });
+    this.dprCap = Game.bootDprCap();
+    this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap; // one 2048 map, plain PCF: half the shadow cost of the soft kernel
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.02;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap; // one map, plain PCF: half the shadow cost of the soft kernel
+    // PBR-NEUTRAL TONE MAP: it keeps the saturation and the hue of the lights (ACES washes the reds and the blues
+    // out into pastels as they brighten) while still rolling the highlights off softly — the reason the arena can
+    // now be pushed much brighter without the picture turning milky.
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
     container.appendChild(this.renderer.domElement);
     this.renderer.domElement.style.display = 'block';
 
     const pm = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
-    this.scene.environmentIntensity = 0.34;
+    this.scene.environmentIntensity = 0.38; // metal lives on its reflections — a touch above the old 0.34 without lifting the whole picture
 
     this.arena = buildArena(this.scene);
     this.hangar = buildHangar(this.scene);
@@ -1125,14 +1554,33 @@ export class Game {
 
     const w = container.clientWidth || window.innerWidth;
     const h = container.clientHeight || window.innerHeight;
-    const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: 4, depthBuffer: true, stencilBuffer: false });
+    // the first rung is chosen from the hardware (or from the mode the player pinned), so a weak GPU never has to
+    // eat a few seconds of stutter before the governor has worked out how to save it
+    this.applyTier(this.qAuto ? this.bootTier() : gfxTier(this.qMode), true);
+    const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: this.tierCfg().samples, depthBuffer: true, stencilBuffer: false });
     this.composer = new EffectComposer(this.renderer, rt);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.03, 0.2, 2.5);
-    this.bloom.enabled = false;
+    // CINEMATIC BLOOM — HIGHLIGHT-ONLY. The threshold sits well above diffuse white in the linear HDR buffer, so
+    // the canvas, the steel and the crowd stay exactly as lit as they were and only the things that are genuinely
+    // over-bright (a lamp lens, an LED strip, a jumbotron, a hot spark) bleed a soft glow into the dark of the
+    // hall. That is the whole trick: the arena is not brighter, the LIGHTS are.
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.4, 0.6, 1.16);
+    this.bloom.enabled = this.tierCfg().bloom;
+    const baseBloomSize = UnrealBloomPass.prototype.setSize;
+    const bloom = this.bloom;
+    // the bloom pyramid is run at a FRACTION of the render size: the mips only carry the wide glow, so nothing
+    // of value is lost and the pass costs a few tenths of a millisecond even at 1440p
+    this.bloom.setSize = (bw: number, bh: number) => {
+      const k = QUALITY_TIERS[this.qTier].bloomScale;
+      baseBloomSize.call(bloom, Math.max(64, Math.round(bw * k)), Math.max(64, Math.round(bh * k)));
+    };
     this.composer.addPass(this.bloom);
     this.grade = makeGradePass();
     this.composer.addPass(this.grade);
+    // THE LIGHT METER: one pixel of the graded frame, for the auto-exposure. It sits between the grade and the
+    // tone map and never touches the chain (see MeterPass).
+    this.meter = new MeterPass();
+    this.composer.addPass(this.meter);
     this.composer.addPass(new OutputPass());
 
     // Foreground menu hero robot (standing front view on illuminated platform)
@@ -1221,7 +1669,7 @@ export class Game {
     this.warnRing2 = this.warnEl.children[1] as HTMLElement;
     this.warnTag = this.warnEl.children[3] as HTMLElement;
 
-    this.player = this.makeFighter(true, { ...PLAYER_STYLE, helmetSkin: this.helmetSkin, gloveSkin: this.gloveSkin, armorSkin: this.armorSkin }, 1, 100, 1, 1);
+    this.player = this.makeFighter(true, { ...PLAYER_STYLE, helmetSkin: this.helmetSkin, gloveSkin: this.gloveSkin, armorSkin: this.armorSkin }, 1, hpThick(PLAYER_HP_BASE), 1, 1);
     this.prepareEnemy(0);
     this.toMenu();
 
@@ -1231,6 +1679,7 @@ export class Game {
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onBlur);
+    document.addEventListener('visibilitychange', this.onVisible);
 
     (window as unknown as { __game?: Game }).__game = this;
     this.raf = requestAnimationFrame(this.loop);
@@ -1302,9 +1751,10 @@ export class Game {
     this.arena.rimRed.color.setHex(this.ultra ? 0xff1a3a : this.def.style.glow);
   }
 
-  /** the opponent's tuning for the current difficulty AND IQ */
+  /** the opponent's tuning for the current difficulty AND IQ — and the 1.8× chassis (see HP_SCALE) */
   private makeDef(idx: number) {
-    return smartDef(this.ultra ? ultraDef(OPPONENTS[idx]) : OPPONENTS[idx], this.iq);
+    const d = smartDef(this.ultra ? ultraDef(OPPONENTS[idx]) : OPPONENTS[idx], this.iq);
+    return { ...d, hp: hpThick(d.hp) };
   }
 
   get iqLevel() {
@@ -1498,6 +1948,7 @@ export class Game {
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onBlur);
+    document.removeEventListener('visibilitychange', this.onVisible);
     this.sfx.stopMusic();
     if (this.menuHero) {
       this.scene.remove(this.menuHero.root);
@@ -1674,7 +2125,22 @@ export class Game {
     if (st.cool > 0 || f.blocking || oDown) return;
     if (dist <= 4.0 && f.stam > 18) {
       const r = Math.random();
-      const id: MoveId = f.meter >= 100 ? (r < 0.5 ? 'windmill' : r < 0.8 ? 'bolt' : 'slam') : r < 0.36 ? 'jab' : r < 0.62 ? 'cross' : r < 0.84 ? 'hook' : 'upper';
+      const id: MoveId =
+        f.meter >= 100
+          ? r < 0.4
+            ? 'windmill'
+            : r < 0.65
+              ? 'bolt'
+              : r < 0.85
+                ? 'skyhook'
+                : 'slam'
+          : r < 0.36
+            ? 'jab'
+            : r < 0.62
+              ? 'cross'
+              : r < 0.84
+                ? 'hook'
+                : 'upper';
       if (isOD(id)) f.meter = 0;
       this.startMove(f, id);
       st.cool = 0.22 + Math.random() * 0.45;
@@ -1942,6 +2408,7 @@ export class Game {
 
   toMenu() {
     this.endTeam();
+    this.resetExposure();
     this.phase = 'menu';
     this.phaseT = 0;
     this.result = null;
@@ -2006,6 +2473,10 @@ export class Game {
       this.vs = null;
       this.vsFoe = null;
       this.vsFoe2 = null;
+      this.vsClash = -1;
+      this.vsLockT = 0;
+      this.vsShakeT = 0;
+      this.vsKick = 0;
       this.hangar.setVsBackdrop(false);
       if (this.menuHero) this.menuHero.root.rotation.y = this.heroYaw;
       return;
@@ -2042,6 +2513,16 @@ export class Game {
       } else if (stage === 'lock') {
         this.vsPunch = 0.7;
         this.sfx.ready();
+        // the count that ends in the bell: the clash fires on its own beat inside it (see animateMenuHero)
+        this.vsLockT = 0;
+        this.vsClash = -1;
+        this.vsClashHit = false;
+        this.vsShakeT = 0;
+        this.vsKick = 0;
+      } else {
+        this.vsLockT = 0;
+        this.vsClash = -1;
+        this.vsClashHit = false;
       }
     }
     this.vs = { idx, idx2, stage };
@@ -2062,6 +2543,14 @@ export class Game {
   setHeroMouse(nx: number, ny: number) {
     this.heroMouseX = nx;
     this.heroMouseY = ny;
+  }
+
+  /** forget everything the iris learned — the next shot starts at the neutral exposure */
+  private resetExposure() {
+    this.aeKey = 0.28;
+    this.aeGain = 1;
+    this.aePause = 0;
+    this.aeHold = 0;
   }
 
   private placeMenu() {
@@ -2138,6 +2627,11 @@ export class Game {
     this.keys.clear();
     this.runLatch = false;
     this.shiftHeld = false;
+  };
+
+  /** coming back from another tab: the clock never counts the time we were away (one huge frameMs would upset the governor) */
+  private onVisible = () => {
+    if (document.visibilityState === 'visible') this.last = performance.now();
   };
 
   private onEdge(code: string) {
@@ -2321,7 +2815,6 @@ export class Game {
         cue: 0,
         landed: false,
         raised: false,
-        apex: false,
         inward: out.clone().negate(),
         perp,
       });
@@ -2367,12 +2860,14 @@ export class Game {
       out.u = u;
     } else if (t < t3) {
       // THE FLIGHT: a straight line for the feet-track, a parabola on top for the centre of mass, and a full
-      // tucked front flip in the middle of it (the pivot is the centre of mass — see animateFighter)
+      // tucked front flip in the middle of it (the pivot is the centre of mass — see animateFighter). The turn
+      // rides the real flip curve (flipTurn): it starts once the boots leave the wedge, whips up as he tucks,
+      // holds through the middle and only slows as he opens out — he is still finishing the turn as he lands.
       const u = (t - t2) / (t3 - t2);
       out.pos.lerpVectors(w.take, w.land, u);
       out.y = THREE.MathUtils.lerp(rampY(w.take.length()), 0, u) + FLIGHT_H * 4 * u * (1 - u);
-      const fu = THREE.MathUtils.clamp((u - 0.07) / 0.83, 0, 1);
-      out.flip = Math.PI * 2 * fu * fu * (3 - 2 * fu); // one smooth turn: eases in, steady through the top, eases out
+      const fu = THREE.MathUtils.clamp((u - FLIP_IN) / FLIP_SPAN, 0, 1);
+      out.flip = Math.PI * 2 * flipTurn(fu);
       out.beat = 3;
       out.u = u;
     } else if (t < t4) {
@@ -2477,17 +2972,12 @@ export class Game {
             this.trauma = Math.min(1, this.trauma + 0.22);
           }
         }
-        // the apex: a beat of slow motion so the flip reads, then it drops out of the sky at full speed
-        if (f.isPlayer && cur.u > 0.36 && !w.apex) {
-          w.apex = true;
-          this.slowScale = 0.5;
-          this.slowT = 0.26;
-        }
-        // the tuck follows the rotation: knees come up as the turn speeds up, open out as it slows, and the legs
-        // reach down for the canvas on the last part of the descent
-        const fu = THREE.MathUtils.clamp((cur.u - 0.07) / 0.83, 0, 1);
+        // the tuck follows the rotation: the knees come up as the turn whips and open out as it sheds speed —
+        // one curve, so the shape of the body and the rate of the turn are the same thing (no floaty apex here,
+        // the only slow motion in the entrance is the beat the landing takes)
+        const fu = THREE.MathUtils.clamp((cur.u - FLIP_IN) / FLIP_SPAN, 0, 1);
         const sm = (a: number, b: number) => THREE.MathUtils.smoothstep(fu, a, b);
-        f.pkTuck = Math.max(0.12, sm(0, 0.28) * (1 - sm(0.68, 0.96)));
+        f.pkTuck = Math.max(0.14, sm(0.0, 0.2) * (1 - sm(0.6, 0.96)));
       } else {
         if (f.state === 'air') f.state = 'idle';
         f.pkTuck += (0 - f.pkTuck) * (1 - Math.exp(-12 * dt));
@@ -2604,6 +3094,7 @@ export class Game {
   }
 
   private beginFight() {
+    this.resetExposure(); // the walk-in lights are not the ring lights: start the ring shot neutral
     this.phase = 'fight';
     this.phaseT = 0;
     for (const f of this.fighters()) {
@@ -2702,63 +3193,216 @@ export class Game {
     const raw = Math.min(0.066, frameMs / 1000);
     this.last = now;
     this.fpsEma += (Math.min(frameMs, 250) - this.fpsEma) * 0.08;
+    // the governor watches for MISSED 60 Hz BEATS, not for an average: a stutter is what the player feels, so a
+    // window in which a quarter of the frames ran long is enough to step a rung down.
     this.fpsT += frameMs / 1000;
-    if (this.fpsT > 1.2) {
+    this.frames++;
+    if (frameMs > 20.5) this.longFrames++;
+    if (this.fpsT >= 0.5) {
+      this.fps = this.frames / Math.max(0.05, this.fpsT);
+      if (this.qWarm > 0) {
+        // the first couple of seconds are not representative: every material in the hall compiles on its first
+        // frame and the arena uploads its textures. Judging the GPU on that would drop a rung for nothing.
+        this.qWarm -= this.fpsT;
+        this.qSteady = 0;
+      } else {
+        this.adaptQuality(this.longFrames / Math.max(1, this.frames));
+      }
       this.fpsT = 0;
-      this.adaptQuality();
+      this.frames = 0;
+      this.longFrames = 0;
     }
     this.step(raw);
   };
 
-  private adaptQuality() {
+  /**
+   * THE 60 FPS GOVERNOR. Called twice a second with the share of frames that missed the beat in that window.
+   * A bad window drops a rung immediately (a soft frame rate is always worse than a softer picture), a good one
+   * slowly climbs back — never onto a rung that already failed on this machine.
+   */
+  private adaptQuality(badFrameShare: number) {
+    if (!this.qAuto) return;
     const ms = this.fpsEma;
-    this.qCooldown = Math.max(0, this.qCooldown - 1.2);
-    if (ms > 19.5) {
-      // dropping frames: step one rung down (and remember the rung we just left could not hold 60)
+    this.qCooldown = Math.max(0, this.qCooldown - 0.5);
+    const last = this.qTier >= QUALITY_TIERS.length - 1;
+    if (badFrameShare > 0.22 || ms > 21.5) {
       this.qSteady = 0;
-      if (this.qCooldown > 0 || this.qTier >= 4) return;
+      if (this.qCooldown > 0 || last) return;
       this.qTierFailed = this.qTier;
       this.applyTier(this.qTier + 1);
-      this.qCooldown = 3.6;
+      // a hard miss (25 fps territory) reacts at once, a marginal one waits a beat before giving anything up
+      this.qCooldown = ms > 27 || badFrameShare > 0.45 ? 1.0 : 2.4;
       return;
     }
-    if (ms < 17.0 && this.qTier > 0 && this.qTier - 1 !== this.qTierFailed) {
-      // a solid 60 for eight seconds: climb one rung back up
-      this.qSteady += 1.2;
-      if (this.qSteady > 8) {
+    if (badFrameShare < 0.05 && ms < 19.2 && this.qTier > 0 && this.qTier - 1 !== this.qTierFailed) {
+      // a genuinely solid 60 for five seconds: climb one rung back up
+      this.qSteady += 0.5;
+      if (this.qSteady >= 5) {
         this.qSteady = 0;
         this.applyTier(this.qTier - 1);
-        this.qCooldown = 6;
+        this.qCooldown = 5;
       }
     } else {
       this.qSteady = 0;
     }
   }
 
-  private applyTier(tier: number) {
-    this.qTier = THREE.MathUtils.clamp(tier, 0, 4);
-    // rung 1: the glossy-floor reflection passes go first
-    const mirrors = this.qTier < 1;
-    if (mirrors !== this.mirrorsOn) {
-      this.mirrorsOn = mirrors;
-      this.arena.setMirrors(mirrors);
+  private applyTier(tier: number, force = false) {
+    const next = THREE.MathUtils.clamp(Math.round(tier), 0, QUALITY_TIERS.length - 1);
+    if (next === this.qTier && !force) return;
+    this.qTier = next;
+    const cfg = this.tierCfg();
+    // 1 · the glossy floors: the canvas sheen first, the hall floor second (it is the bigger, softer one)
+    const canvasMirror = cfg.mirror >= 1;
+    const hallMirror = cfg.mirror >= 2;
+    if (this.arena && (force || canvasMirror !== this.mirrorsOn || hallMirror !== this.hallMirrorOn)) {
+      this.mirrorsOn = canvasMirror;
+      this.hallMirrorOn = hallMirror;
+      this.arena.setMirrors(canvasMirror, hallMirror);
     }
-    // rung 2: 4× → 2× multisampling on the scene target
-    const samples = this.qTier < 2 ? 4 : 2;
-    for (const rt of [this.composer.renderTarget1, this.composer.renderTarget2]) {
-      if (rt.samples !== samples) {
-        rt.samples = samples;
-        rt.dispose();
+    // 2 · the multisample count on the HDR target (the grade pass FXAA covers what is left)
+    if (this.composer) {
+      for (const rt of [this.composer.renderTarget1, this.composer.renderTarget2]) {
+        if (rt.samples !== cfg.samples) {
+          rt.samples = cfg.samples;
+          rt.dispose();
+        }
       }
     }
-    // rungs 3–4: the render scale
-    const q = this.qTier < 3 ? 1.0 : this.qTier < 4 ? 0.85 : 0.7;
-    if (q !== this.quality) {
-      this.quality = q;
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.quality));
-      this.resize();
+    // 3 · the render scale — the single biggest lever there is
+    if (force || cfg.scale !== this.quality) {
+      this.quality = cfg.scale;
+      this.renderer.setPixelRatio(this.pixelRatio());
+      if (this.composer) this.resize();
     }
-    if (this.qTier >= 4) this.bloom.enabled = false;
+    // 4 · the shadow map of the key light
+    if (this.arena) {
+      const sh = this.arena.keyLight.shadow;
+      if (sh.mapSize.x !== cfg.shadow) {
+        sh.mapSize.set(cfg.shadow, cfg.shadow);
+        if (sh.map) {
+          sh.map.dispose();
+          sh.map = null;
+        }
+      }
+    }
+    // 5 · the bloom
+    if (this.bloom) this.bloom.enabled = cfg.bloom;
+  }
+
+  /** the render scale this device is allowed to run at, on top of the current tier */
+  private pixelRatio() {
+    return Math.min(window.devicePixelRatio || 1, this.dprCap) * this.quality;
+  }
+
+  private tierCfg() {
+    return QUALITY_TIERS[this.qTier];
+  }
+
+  /**
+   * A 4K panel at dpr 2 means eight million pixels of HDR with MSAA and post — no GPU holds that at 60. The cap
+   * keeps the frame inside a sane pixel budget (the FXAA and the MSAA share the edge work, so a slightly lower
+   * density is invisible), and every rung of the ladder then scales it further.
+   */
+  static bootDprCap() {
+    try {
+      const dpr = window.devicePixelRatio || 1;
+      const w = window.innerWidth || 1280;
+      const h = window.innerHeight || 720;
+      const budget = 2.9e6; // ≈ 2266 × 1275, the sweet spot for a modern laptop GPU at a locked 60
+      return Math.max(0.75, Math.min(dpr, 2, Math.sqrt(budget / Math.max(1, w * h))));
+    } catch {
+      return 1.5;
+    }
+  }
+
+  /**
+   * WHICH RUNG TO START ON. Reading the GPU string is the only honest way to know before a single frame has been
+   * drawn; software rasterizers go straight to the bottom, phone-class GPUs start low, and the governor takes it
+   * from there in the first second of play.
+   */
+  private bootTier(): number {
+    let gpu = '';
+    try {
+      const gl = this.renderer.getContext();
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      if (ext) gpu = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '').toLowerCase();
+    } catch {
+      /* the string is a privilege, not a right */
+    }
+    if (/swiftshader|llvmpipe|software|basic render|mesa offscreen/.test(gpu)) return 4;
+    if (/mali|adreno|powervr|videocore|vivante|tegra/.test(gpu)) return 3;
+    const cores = navigator.hardwareConcurrency || 4;
+    const px = (window.innerWidth || 1280) * (window.innerHeight || 720) * Math.min(window.devicePixelRatio || 1, 2) ** 2;
+    if (/intel/.test(gpu) && /(hd|uhd|iris|graphics)/.test(gpu)) return px > 3.2e6 ? 2 : 1;
+    if (cores <= 2) return 3;
+    if (cores <= 4 && px > 3.2e6) return 2;
+    // a discrete GPU we can name gets the full rig straight away — everything else starts one rung down and lets
+    // the governor PROMOTE it after five solid seconds, because a first-second stutter is worse than a slightly
+    // softer first second
+    if (/apple m[1-9]|nvidia|geforce|rtx|gtx|radeon|rx ?\d|arc a\d|quadro/.test(gpu)) return 0;
+    return gpu ? 1 : cores > 6 ? 1 : 2;
+  }
+
+  /** the manual exposure step (0.85 … 1.25), remembered between visits */
+  setBrightness(b: number) {
+    const v = (BRIGHTNESS_STEPS as readonly number[]).includes(b) ? b : 1.0;
+    if (v === this.bright) return;
+    this.bright = v;
+    try {
+      localStorage.setItem(LS_BRIGHT, String(v));
+    } catch {
+      /* ignore */
+    }
+    this.resetExposure();
+    this.emitHud(true);
+  }
+
+  /** the graphics mode the player pinned (auto = the governor), remembered between visits */
+  setGfxMode(m: GfxMode) {
+    this.qMode = m;
+    this.qAuto = m === 'auto';
+    try {
+      localStorage.setItem(LS_GFX, m);
+    } catch {
+      /* ignore */
+    }
+    if (!this.qAuto) this.applyTier(gfxTier(m));
+    else this.applyTier(this.bootTier());
+    this.emitHud(true);
+  }
+
+  /**
+   * THE IRIS. Downsample the composed HDR frame to a single averaged pixel (three halvings) and read it back every
+   * twelfth frame. `renderer.readRenderTargetPixels` is synchronous, so twelve frames of texture memory (plus the
+   * GPU's own pipeline depth) is the safe margin — and it is one pixel, so the transfer is nothing.
+   */
+  private sampleScene() {
+    if (this.aeDead) return;
+    try {
+      this.renderer.readRenderTargetPixels(this.meter.rt, 0, 0, 1, 1, this.aeBuf);
+      const lum = (0.2126 * this.aeBuf[0] + 0.7152 * this.aeBuf[1] + 0.0722 * this.aeBuf[2]) / 255;
+      this.aeKey += (THREE.MathUtils.clamp(lum, 0.001, 1.2) - this.aeKey) * 0.4;
+    } catch {
+      this.aeDead = true; // no readback on this driver — the picture simply keeps its fixed exposure
+    }
+  }
+
+  /** the exposure the grade pass is told to use: the fixed base, times the gentle auto-exposure correction */
+  private updateAutoExposure(dt: number) {
+    this.aeHold = Math.max(0, this.aeHold - dt);
+    if (this.aeHold > 0) {
+      // a cinematic flash or a white-out IS the point of the shot: do not let the iris fight it
+      this.aePause = Math.min(1.4, this.aePause + dt * 3);
+      return;
+    }
+    this.aePause = Math.max(0, this.aePause - dt * 0.9);
+    if (this.aePause > 0) return;
+    // Asymmetric ON PURPOSE: a hot frame gets pulled down, a dark one is left exactly as it was lit. An
+    // auto-exposure that also brightens is how a night scene ends up looking like day.
+    const key = this.aeKey / Math.max(0.001, this.bright); // normalised: the slider is not a lighting change
+    const want = THREE.MathUtils.clamp(0.26 / Math.max(0.02, key), 0.82, 1.0);
+    this.aeGain += (want - this.aeGain) * (1 - Math.exp(-1.6 * dt));
   }
 
   private step(raw: number) {
@@ -2780,12 +3424,16 @@ export class Game {
       const dt = this.freeze > 0 ? 0 : raw * this.timeScale;
       this.time += raw;
       if (this.phase === 'menu') {
-        this.trauma = 0;
-        this.camBump = 0;
-        this.camPush = 0;
-        this.fovKick = 0;
-        this.camImp.set(0, 0, 0);
-        this.camImpVel.set(0, 0, 0);
+        // ...except through the fist clash: the lobby camera is a rock-solid portrait, and the one thing allowed to
+        // move it is the two machines slamming their fists together (vsShakeT, set on the impact).
+        if (this.vsShakeT <= 0.002) {
+          this.trauma = 0;
+          this.camBump = 0;
+          this.camPush = 0;
+          this.fovKick = 0;
+          this.camImp.set(0, 0, 0);
+          this.camImpVel.set(0, 0, 0);
+        }
         this.flashAmt = 0;
       }
       if (dt > 0) {
@@ -2816,6 +3464,17 @@ export class Game {
     }
     this.grade.uniforms.time.value = this.time;
     this.composer.render();
+    // the iris runs on world time so it never counts a paused frame, and the flash hold keeps a strobe a strobe
+    this.aeHold = Math.max(this.aeHold, this.flashAmt * 0.5 + (this.phase === 'intro' || this.phase === 'matchEnd' ? 0.3 : 0));
+    this.updateAutoExposure(Math.min(0.05, raw));
+    this.aeFrames++;
+    if (this.aeFrames >= 12) {
+      this.aeFrames = 0;
+      this.sampleScene();
+    }
+    this.grade.uniforms.exposure.value = 1.13 * this.aeGain * this.bright;
+    // ...and the top-end limiter rides along with it: the hotter the frame, the harder the ceiling
+    this.grade.uniforms.guard.value = THREE.MathUtils.clamp((this.aeKey / Math.max(0.001, this.bright) - 0.34) / 0.3, 0, 1);
     this.emitHud(false);
   }
 
@@ -3564,7 +4223,7 @@ export class Game {
   /** the target reshapes the punch: body shots pitch down onto the ribs, head shots ride a little higher */
   private aimPose(f: Fighter, m: Move, p: Pose): Pose {
     if (this.aimsLow(f, m)) {
-      const pitch = m.id === 'upper' ? 0.3 : 0.5; // an uppercut to the body still travels up, just from lower down
+      const pitch = m.id === 'upper' || m.id === 'skyhook' ? 0.3 : 0.5; // an uppercut to the body still travels up, just from lower down
       return { sx: p.sx + pitch, sy: p.sy, sz: Math.min(1.2, p.sz + 0.06), ex: p.ex - 0.06 };
     }
     // HEAD: the eyes sit above the old strike line, so straights and hooks ride a touch higher to meet them
@@ -3738,8 +4397,9 @@ export class Game {
     p.state = 'idle';
     p.meter = 0;
     this.meterReadyShown = false;
-    // Cycle Freestyle Windmill Overdrive (muter-muter tangan lalu menghajar musuh) with Bolt & Slam
-    const odMoves: MoveId[] = ['windmill', 'bolt', 'windmill', 'slam'];
+    // THE OVERDRIVE BOOK — every press of R (meter full) runs to the next one of the four, so a comeback is never
+    // the same shape twice: the freestyle spinning smash, the lunging straight, the rising uppercut and the slam.
+    const odMoves: MoveId[] = ['windmill', 'bolt', 'skyhook', 'slam'];
     const pick = odMoves[p.moveSeq % odMoves.length];
     this.odToggle = !this.odToggle;
     if (fromDodge) {
@@ -3874,8 +4534,18 @@ export class Game {
     f.winStrike = (f.dodgeWinT > 0 || isReactiveCounter) && !isOD(id);
     const dodgeSpd = isReactiveCounter ? 1.48 : f.winStrike ? DODGE_WIN_SPD : 1;
     const rageSpd = f.isPlayer && f.rage ? 1.2 : 1;
-    const spamRhythm = f.spamCount >= 2 ? 1 + ((f.strikeVar % 3) - 1) * 0.05 : 1;
-    f.atkSpd = dodgeSpd * rageSpd * spamRhythm;
+    // THE JAB RHYTHM. The jab is the one punch that is MEANT to be doubled up, so it gets a real rhythm instead
+    // of the general spam jitter: every jab thrown inside the chain window tightens the next one (up to +30 %),
+    // which turns a flurry into an escalating piston — 1-1-1-1 — rather than a mush of equal taps. Any other
+    // punch, or a pause, drops the chain back to zero.
+    if (id === 'jab') f.jabChain = f.animT - f.lastJabAt < JAB_CHAIN_WIN ? Math.min(JAB_CHAIN_MAX, f.jabChain + 1) : 0;
+    else if (f.animT - f.lastJabAt >= JAB_CHAIN_WIN) f.jabChain = 0;
+    if (id === 'jab') f.lastJabAt = f.animT;
+    const jabSpd = id === 'jab' ? jabChainSpeed(f.jabChain) : 1;
+    // a jab also keeps a metronome-steady cadence: the rhythm jitter that keeps the big punches from looking
+    // copy-pasted would read as sloppy on the one punch you are supposed to be able to repeat on beat
+    const spamRhythm = id === 'jab' ? 1 : f.spamCount >= 2 ? 1 + ((f.strikeVar % 3) - 1) * 0.05 : 1;
+    f.atkSpd = dodgeSpd * rageSpd * spamRhythm * jabSpd;
     if (f.isPlayer) {
       const tgtYaw = Math.atan2(this.enemy.pos.x - f.pos.x, this.enemy.pos.y - f.pos.y);
       f.yaw += wrapAngle(tgtYaw - f.yaw) * (id === 'counter' || f.winStrike ? 0.9 : 0.6);
@@ -3923,6 +4593,17 @@ export class Game {
             'pop-crit',
           );
         }
+      } else if (id === 'skyhook') {
+        // the launcher: the charge whistle drops a note as he sinks, and the call-out says which one is coming
+        this.sfx.whoosh(0.9);
+        this.sfx.crackle(0.35);
+        if (this.phase === 'fight') {
+          this.popup(
+            new THREE.Vector3(f.pos.x, 6.8 * f.scale, f.pos.y),
+            f.isPlayer ? '☄️ OVERDRIVE UPPERCUT!' : '⚠️ OVERDRIVE UPPERCUT MUSUH!',
+            'pop-crit',
+          );
+        }
       }
       // the director steps in for the charge: a short low hero angle before the strike lands
       if (f.isPlayer) this.startCine('od');
@@ -3953,7 +4634,7 @@ export class Game {
       blockT: 0,
       reactT: -1,
       reactAct: '' as '' | 'block' | 'side' | 'back',
-      habit: { jab: 0, cross: 0, hook: 0, upper: 0, slam: 0, bolt: 0, windmill: 0, grab: 0, counter: 0 } as Record<MoveId, number>,
+      habit: { jab: 0, cross: 0, hook: 0, upper: 0, slam: 0, bolt: 0, windmill: 0, skyhook: 0, grab: 0, counter: 0 } as Record<MoveId, number>,
       defStreak: 0,
       defT: 0,
       punishT: 0,
@@ -4117,7 +4798,9 @@ export class Game {
       e.meter = 0;
       ai.holdOD = 0;
       const odRoll = Math.random();
-      if (odRoll < 0.55) return 'windmill';
+      if (odRoll < 0.4) return 'windmill';
+      // the launcher only comes out when he is inside his own reach for it — thrown from range it wastes the meter
+      if (odRoll < 0.62 && dist <= 4.3 * e.scale) return 'skyhook';
       return dist > 4.0 * e.scale || odRoll < 0.8 ? 'bolt' : 'slam';
     }
     if (chain) {
@@ -4544,11 +5227,13 @@ export class Game {
       const r = Math.random();
       const id: MoveId =
         f.meter >= 100
-          ? r < 0.55
+          ? r < 0.45
             ? 'windmill'
-            : r < 0.8
+            : r < 0.7
               ? 'bolt'
-              : 'slam'
+              : r < 0.88
+                ? 'skyhook'
+                : 'slam'
           : r < 0.34
             ? 'jab'
             : r < 0.6
@@ -4632,6 +5317,14 @@ export class Game {
       if (f.slingT <= 0 && f.state !== 'ko' && f.state !== 'down' && f.state !== 'air') {
         f.kb.x += f.slingX * f.slingV;
         f.kb.y += f.slingZ * f.slingV;
+        // ENERGY CHECK: whatever the spring and the sling have added together, the body may not leave the ropes
+        // faster (inwards) than it arrived. This is what makes a rope rebound a rebound — it dies out.
+        const inW = f.kb.x * f.slingX + f.kb.y * f.slingZ; // how fast it is now travelling back into the ring
+        const k = ropeEnergyDamp(inW, f.slingIn);
+        if (k < 1) {
+          f.kb.x *= k;
+          f.kb.y *= k;
+        }
         f.hit = Math.max(f.hit, 0.45);
         f.hitF = 1; // thrown FORWARD this time: the chest leads, the head trails behind
         f.hitL = 0;
@@ -4835,23 +5528,37 @@ export class Game {
         [sy * front, cy * front],
         [cy * sideK * sgnZ, -sy * sideK * sgnZ],
       ];
-      const limit = RING_IN - 0.35;
+      // Each end is held inside THE SAME ROPE LINE the body centre is held inside — `touch` plus the same ropeGive
+      // curve the drawn rope uses, measured at that end's own position along the rope. The old code compared the
+      // ends against a second, stricter limit (RING_IN - 0.35) that was never on screen, so a body lying a little
+      // inside the rope line still measured as "through it" and got yanked inward by up to three metres.
+      const cap = ropeInwardStep(dt);
       let shX = 0;
       let shZ = 0;
       for (const [ox, oz] of ends) {
         const px = nx + ox;
         const pz = nz + oz;
-        if (Math.abs(px) > limit) shX = Math.abs(px) - limit > Math.abs(shX) ? (px > 0 ? -(px - limit) : limit - px) : shX;
-        if (Math.abs(pz) > limit) shZ = Math.abs(pz) - limit > Math.abs(shZ) ? (pz > 0 ? -(pz - limit) : limit - pz) : shZ;
+        const lx = touch + ropeGive(pz);
+        const lz = touch + ropeGive(px);
+        if (Math.abs(px) > lx) {
+          const o = Math.abs(px) - lx;
+          if (o > Math.abs(shX)) shX = (px > 0 ? -1 : 1) * o;
+        }
+        if (Math.abs(pz) > lz) {
+          const o = Math.abs(pz) - lz;
+          if (o > Math.abs(shZ)) shZ = (pz > 0 ? -1 : 1) * o;
+        }
       }
+      // ...and it is applied as MOTION, capped per frame. While the error remains the next frame pushes again, so
+      // the body keeps sliding in at exactly ROPE_SHOVE until it is clear — a lean, never a pop.
       if (shX !== 0) {
-        nx += shX;
+        nx += THREE.MathUtils.clamp(shX, -cap, cap);
         if (f.kb.x * shX < 0) f.kb.x *= 0.2;
         if (f.vel.x * shX < 0) f.vel.x = 0;
         this.arena.ropePress(shX < 0 ? 20 : -20, nz, Math.min(0.6, Math.abs(shX)));
       }
       if (shZ !== 0) {
-        nz += shZ;
+        nz += THREE.MathUtils.clamp(shZ, -cap, cap);
         if (f.kb.y * shZ < 0) f.kb.y *= 0.2;
         if (f.vel.y * shZ < 0) f.vel.y = 0;
         this.arena.ropePress(nx, shZ < 0 ? 20 : -20, Math.min(0.6, Math.abs(shZ)));
@@ -4901,10 +5608,14 @@ export class Game {
       if (fresh && vTot > 2.5 && f.wallCd <= 0) this.ropeImpact(f, ax === 0 ? sgn : 0, ax === 1 ? sgn : 0, vTot);
     }
     // absolute stop: the body can never pass the fully stretched rope (which gives less and less towards the posts)
+    // — but it is STOPPED BY VELOCITY first, and the position clamp only ever takes back the part of the frame's
+    // travel that could not be stopped (capped, see ROPE_STOP). A hard clamp is what turned a fast body in the ropes
+    // into a teleport: the whole overshoot used to land on the position in a single frame.
     const hardX = touch + ropeGive(nz);
     const hardZ = touch + ropeGive(nx);
-    const cx = THREE.MathUtils.clamp(nx, -hardX, hardX);
-    const cz = THREE.MathUtils.clamp(nz, -hardZ, hardZ);
+    const stopCap = ropeHardStep(dt);
+    const cx = Math.abs(nx) <= hardX ? nx : Math.sign(nx) * Math.max(hardX, Math.abs(nx) - stopCap);
+    const cz = Math.abs(nz) <= hardZ ? nz : Math.sign(nz) * Math.max(hardZ, Math.abs(nz) - stopCap);
     if (cx !== nx) {
       if (f.kb.x * nx > 0) f.kb.x *= 0.2;
       if (f.vel.x * nx > 0) f.vel.x = 0;
@@ -5093,9 +5804,14 @@ export class Game {
       this.sfx.cheer(0.5);
       this.hype = Math.max(this.hype, 0.8);
       this.popup(new THREE.Vector3(f.pos.x, 6.4 * f.scale, f.pos.y), 'ROPE BOUNCE!', 'pop-crit');
-      // the ropes stretch for a beat and then CATAPULT him back into the ring (see updateFighter)
+      // the ropes stretch for a beat and then CATAPULT him back into the ring (see updateFighter). The throw is
+      // metred against the speed he ACTUALLY hit them with: a rope returns less than it was given, never more, so
+      // the rebound decays instead of escalating — the old flat 5-12.5 m/s add on top of the spring's own push
+      // could hand a body MORE speed than it arrived with, and two ropes would then rally it back and forth
+      // faster and faster across the ring.
       f.slingT = 0.16 + p * 0.08;
-      f.slingV = 5 + p * 7.5;
+      f.slingV = ropeSlingSpeed(p, vIn);
+      f.slingIn = vIn;
       f.slingX = -wx;
       f.slingZ = -wz;
       // and the whole ring takes the shock: a short canvas thump + camera kick
@@ -5198,6 +5914,19 @@ export class Game {
       this.fx.ring(a.pos.x - toA.x * 2.2, a.pos.y - toA.y * 2.2, 0x5fe2ff, 8.5, 0.48, 0.14);
       this.fx.spark(fxp, 52, 16, 0xffb830, new THREE.Vector3(-toA.x, 0.18, -toA.y), 0.75, 0.75, 6);
       this.fx.spark(fxp, 28, 13, 0x5fe2ff, new THREE.Vector3(-toA.x, 0.1, -toA.y), 0.65, 0.6, 4);
+    }
+    if (m.id === 'skyhook') {
+      // OVERDRIVE UPPERCUT: the shock goes UP. A white-gold sonic wave is driven straight up off the fist and two
+      // rings climb with it (they are flat, so they read as halos rising off the jaw), while the sparks are thrown
+      // up the same line — the whole burst tells you which way the body is about to travel.
+      const fxp = new THREE.Vector3(a.pos.x - toA.x * 1.5, 4.1 * a.scale, a.pos.y - toA.y * 1.5);
+      const up = new THREE.Vector3(-toA.x * 0.22, 1, -toA.y * 0.22).normalize();
+      this.fx.impactWave(fxp, up, 0xffe6b0, 6.5, 0.3);
+      this.fx.ring(a.pos.x - toA.x * 1.4, a.pos.y - toA.y * 1.4, 0xffd27a, 8.6, 0.5, 3.5 * a.scale);
+      this.fx.ring(a.pos.x - toA.x * 1.2, a.pos.y - toA.y * 1.2, 0xfff6dc, 5.2, 0.42, 4.5 * a.scale);
+      this.fx.spark(fxp, 46, 16, 0xffd27a, up, 0.8, 0.75, 9);
+      this.fx.spark(fxp, 24, 12, 0xffffff, up, 0.6, 0.6, 7);
+      this.fx.ring(a.pos.x, a.pos.y, 0xcfd6e6, 4.2, 0.35); // the canvas he pushed off
     }
     if (m.id === 'counter') {
       // HALF AN OVERDRIVE — and the same fireworks, scaled down: a tight shock ring at the fist and a short speed
@@ -5405,7 +6134,8 @@ export class Game {
     d.hitPt = aim === AIM_HEAD ? 1 : 0;
     d.hitSpin = d.hitL * (m.kind === 'side' ? 1.7 : 0.9);
     d.hitSign = Math.abs(d.hitL) > 0.1 ? Math.sign(d.hitL) : Math.random() < 0.5 ? 1 : -1;
-    a.meter = Math.min(100, a.meter + dmg * 1.3 * (!a.isPlayer && this.ultra ? 1.5 : 1)); // ultra: the enemy charges Overdrive faster
+    // THE JAB IS HOW YOU CHARGE (see meterGainFor): measure with the jab, bank the meter, cash it in with R
+    a.meter = Math.min(100, a.meter + meterGainFor(m.id, dmg, !a.isPlayer && this.ultra));
     d.meter = Math.min(100, d.meter + dmg * 0.55);
     if (a.isPlayer && a.meter >= 100 && !this.meterReadyShown) {
       this.meterReadyShown = true;
@@ -5479,7 +6209,9 @@ export class Game {
       const dir = new THREE.Vector2().addScaledVector(pd, 0.62).addScaledVector(away, 0.38).normalize();
       const force = m.knock * (0.72 + big * 0.5) * (a.runStrike ? 1.35 : 1) * (a.rage ? 1.2 : 1) * (crit ? 1.15 : 1);
       const horiz = THREE.MathUtils.clamp(force * 0.95, 4.5, 13.5);
-      const vert = m.kind === 'up' ? 12 + big * 4.5 : m.kind === 'side' ? 7.5 + big * 3 : 8 + big * 3.5;
+      // the Overdrive uppercut is THE launcher: it throws him highest of anything in the book (a heavy uppercut that
+      // was already a launcher, now with a meter behind it) — everything else keeps the standard profile
+      const vert = m.id === 'skyhook' ? 16.5 + big * 5 : m.kind === 'up' ? 12 + big * 4.5 : m.kind === 'side' ? 7.5 + big * 3 : 8 + big * 3.5;
       d.vy = vert;
       d.kb.copy(dir).multiplyScalar(horiz);
       // a hook turns him round in the air (the head is thrown off the axis, the body follows); a straight barely does
@@ -5487,7 +6219,7 @@ export class Game {
       // the limbs are thrown the way he is going (ragdoll kick side = the side the blow came across to)
       const sideL = dir.x * Math.cos(d.yaw) - dir.y * Math.sin(d.yaw); // + = driven to his left
       this.ragdollKick(d, 0.55 + big * 0.45, Math.abs(sideL) > 0.25 ? (sideL > 0 ? 1 : -1) : 1);
-      label = m.id === 'grab' ? 'THROW!' : m.id === 'windmill' ? 'FREESTYLE SMASH!' : broken && !launcher ? 'KNOCKDOWN!' : label || 'LAUNCH!';
+      label = m.id === 'grab' ? 'THROW!' : m.id === 'windmill' ? 'FREESTYLE SMASH!' : m.id === 'skyhook' ? 'SKYHOOK!' : broken && !launcher ? 'KNOCKDOWN!' : label || 'LAUNCH!';
     } else if (!armored) {
       // BOXING HIT PUSHBACK & RING DOMINANCE:
       // Each landed strike noticeably drives the defender backward across the canvas while the attacker steps in to press the advantage!
@@ -5528,8 +6260,11 @@ export class Game {
     } else if (big >= 0.6 || crit || a.runStrike || a.winStrike || a.rage) {
       this.slowT = Math.max(this.slowT, 0.14 + big * 0.11);
       this.slowScale = 0.46;
+    } else if (m.id === 'jab') {
+      // THE JAB DOES NOT SLOW TIME. It is the one punch you are supposed to be able to chain, so it gets PUNCH,
+      // not pause: no slow-mo, no leftover time-scale to drag the next jab down — the snap comes from the hit-stop
+      // above, the white crack below and the sound, and the flurry keeps its own momentum.
     } else {
-      // even a clean jab carries unmistakable 2-ton hydraulic piston weight
       this.slowT = Math.max(this.slowT, 0.065);
       this.slowScale = Math.min(this.slowScale < 1 ? this.slowScale : 1, 0.68);
     }
@@ -5541,6 +6276,15 @@ export class Game {
     this.camImpVel.y -= 1.2 + big * 2.4;
     this.camImpVel.z += away.y * impMag;
     d.flash = 1;
+    // THE JAB SNAP: its own little report, so a flurry of them reads as a machine gun instead of a mush of small
+    // hits — a tight white crack at the point of contact, a thin shock ring, a dry crackle and a short lens kick
+    if (m.id === 'jab') {
+      this.fx.flash(hitPos, 2.4 + big * 2.2, 0xffffff, 0.09);
+      this.fx.ring(hitPos.x, hitPos.z, 0xeaf4ff, 1.6 + big * 1.2, 0.2, hitPos.y);
+      this.sfx.crackle(0.26 + big * 0.34);
+      this.camBump = Math.max(this.camBump, 0.13 + big * 0.14);
+      if (a.isPlayer) this.fovKick = Math.max(this.fovKick, 1.3);
+    }
     // head shots snap his head back; body shots fold him over the punch (a negative hitUp drops the torso + head)
     d.hitUp = aim === AIM_BODY && !launched ? -(0.36 + big * 0.6) : m.kind === 'up' && !launched ? 0.45 + big * 0.75 : 0;
     d.dash.set(0, 0);
@@ -5586,7 +6330,7 @@ export class Game {
     // a player Overdrive that connects gets the director's punch-in on the point of impact — unless this is the
     // one that takes his head off, in which case the long HEAD RIP shot takes over instead
     const willRip = a.isPlayer && aim === AIM_HEAD && !d.decapitated && this.phase === 'fight';
-    if (a.isPlayer && isOD(m.id) && !willRip) this.startCine('hit', hitPos, m.id === 'bolt' ? toA : undefined);
+    if (a.isPlayer && isOD(m.id) && !willRip) this.startCine('hit', hitPos, m.id === 'bolt' || m.id === 'skyhook' ? toA : undefined);
     if (this.phase !== 'menu') {
       if (d.isPlayer) {
         this.flashAmt = Math.min(0.75, 0.22 + big * 0.35);
@@ -5821,7 +6565,7 @@ export class Game {
       hitUp: 0,
       fall: 0,
       time: t,
-      glow: 0.55 + Math.sin(t * 2.5) * 0.12,
+      glow: 0.45 + Math.sin(t * 2.5) * 0.09, // the lobby pose glows, it does not flare — the clash has its own
       flash: 0,
       tilt: 0,
       dash: 0,
@@ -5830,6 +6574,127 @@ export class Game {
       lookX: mirror ? -mx : mx,
       lookY: my,
     };
+  }
+
+  /**
+   * THE CLASH, as a full animation state. The pose numbers come from `vsClashState` (Game.ts exports it, and the
+   * test harness drives the rig with the very same call) — this method only wraps them with the rest of the body:
+   * the weight going forward, the rear foot re-planting on the release, the face tracking the opponent, the optics
+   * charging through the coil, and the breath. No dash / hit / air channels: the machines are locked in one punch.
+   */
+  private vsClashAnim(side: 'hero' | 'foe'): AnimState {
+    const c = vsClashState(side, this.vsClash, this.vsSeq * 2 + (side === 'foe' ? 1 : 0));
+    const t = this.time;
+    const step = c.punch >= 0; // the release: the rear foot drives into the punch (one re-plant per clash)
+    return {
+      arms: c.arms,
+      twist: c.twist,
+      lean: c.lean,
+      lunge: c.lunge,
+      dip: c.dip,
+      roll: c.roll,
+      vf: 0,
+      vl: 0,
+      af: 0,
+      al: 0,
+      yawRate: 0,
+      air: 0,
+      hit: 0,
+      hitSign: 1,
+      hitUp: 0,
+      fall: 0,
+      time: t,
+      glow: c.glow,
+      flash: c.shock * 0.5,
+      tilt: 0,
+      dash: 0,
+      dashF: 0,
+      dashL: 1,
+      lookX: c.lookX,
+      lookY: c.lookY,
+      headYaw: c.head,
+      strike: c.strike,
+      strikePow: c.pow,
+      punchFoot: step ? c.punch : -1,
+      punchZ: 0.46,
+      punchX: side === 'hero' ? 0.10 : -0.10,
+      punchDur: 0.24,
+      punchSeq: c.punchSeq,
+    };
+  }
+
+  /**
+   * THE SHOW AROUND THE CLASH: the energy that builds on the knuckles through the coil (sparks spitting off the
+   * servos, the crowd starting to whistle), the whoosh as the throw is released, and the grind after the hit — the
+   * two machines pushing against each other, sparks dropping off the contact patch until the shot is covered.
+   */
+  private vsClashFx(dt: number) {
+    const t = this.vsClash;
+    const px = HANGAR_POS.x + VS_CLASH_POINT.x;
+    const pz = HANGAR_POS.z + VS_CLASH_POINT.z;
+    const y = VS_CLASH_POINT.y;
+    const p = new THREE.Vector3(px, y, pz);
+    if (t < VS_CLASH_HIT) {
+      // the build-up: the coil crackles a little, and the last third of a second before the hit it starts spitting
+      const c = vsClashState('hero', t).charge;
+      this.vsSparkT -= dt;
+      if (c > 0.18 && this.vsSparkT <= 0) {
+        this.vsSparkT = 0.16 - c * 0.08;
+        this.fx.spark(p, 2 + Math.round(c * 5), 1.6 + c * 3.2, 0xbfe6ff, new THREE.Vector3(0, 0.3, 1), 0.9, 0.3, 7);
+        if (c > 0.6) this.sfx.crackle(c * 0.5);
+      }
+      // the release: one whoosh + servo surge as the fist leaves the guard
+      if (!this.vsWhoosh && t >= VS_CLASH_REL) {
+        this.vsWhoosh = true;
+        this.sfx.whoosh(0.9);
+        this.sfx.servo();
+      }
+      return;
+    }
+    // the grind: both machines drive into the lock and the knuckles scrape — sparks and a low crackle until covered
+    const g = vsClashState('hero', t).grind;
+    this.vsSparkT -= dt;
+    if (g > 0 && this.vsSparkT <= 0) {
+      this.vsSparkT = 0.09;
+      this.fx.spark(p, 3 + Math.round(g * 7), 2.2 + g * 4.2, 0xffd9a0, new THREE.Vector3(0, 0.25, 1), 1.2, 0.34, 9);
+      if (Math.random() < 0.5) this.sfx.crackle(0.35);
+    }
+    // a thin pressure ring every now and then: the two machines leaning on each other, servos loaded
+    this.vsRingT -= dt;
+    if (g > 0 && this.vsRingT <= 0) {
+      this.vsRingT = 0.22;
+      this.fx.ring(px, pz, 0xffe0a0, 1.6 + g * 1.8, 0.34, y - 0.9);
+    }
+  }
+
+  /**
+   * THE MOMENT THE FISTS MEET: a white core at the contact point 6.5 m up between the two machines, a shock ring,
+   * sparks off both knuckles, the crowd, and the lens — which dives in 22 % and takes the hit through the
+   * spring-damper (the only time the lobby camera is allowed to shake).
+   */
+  private vsClashImpact() {
+    const px = HANGAR_POS.x + VS_CLASH_POINT.x; // just past the middle, where the measured gloves meet
+    const pz = HANGAR_POS.z + VS_CLASH_POINT.z;
+    const y = VS_CLASH_POINT.y;
+    this.fx.flash(new THREE.Vector3(px, y, pz), 3.4, 0xfff4d6, 0.26);
+    this.fx.impactWave(new THREE.Vector3(px, y, pz), new THREE.Vector3(0, 0.15, 1), 0xffd9a0, 3.2, 0.3);
+    this.fx.ring(px, pz, 0xffe0a0, 5.2, 0.42, y);
+    this.fx.spark(new THREE.Vector3(px, y, pz), 26, 7.5, 0xffe6b0, new THREE.Vector3(0, 0.2, 1), 1.5, 0.5, 12);
+    this.sfx.hit(1);
+    this.sfx.crackle(1);
+    this.sfx.roar(0.85, 1.6);
+    this.trauma = 0.92;
+    this.camBump = 0.42;
+    this.camPush = 0.14;
+    this.fovKick = -3.2;
+    this.camImp.set(0, -0.3, 0.22);
+    this.vsShakeT = 1;
+    this.hype = Math.min(1, this.hype + 0.6);
+    // ...and the shock travels through BOTH machines: the head whips on its neck, the shoulders lag, the hips sink,
+    // each on its own spring, so the whole body rings instead of the armour moving as one block.
+    this.menuHero.jolt(1.35, 1);
+    if (this.vsFoe) this.vsFoe.robot.jolt(1.35, -1);
+    this.sfx.pyro(0.25);
   }
 
   private animateMenuHero(dt: number) {
@@ -5843,6 +6708,37 @@ export class Game {
       // punches in on the reveal.
       const heroPose: HeroPose = this.heroPose;
       this.vsPunch = Math.max(0, this.vsPunch - dt * 2.2);
+      void heroPose;
+      // ---- THE FIST CLASH: the lock-in count is the clock, and the fists meet exactly as the "1" lands on screen
+      if (this.vs.stage === 'lock' && this.vsClash < 0) {
+        this.vsLockT += dt;
+        if (this.vsLockT >= VS_CLASH_AT) {
+          this.vsClash = 0;
+          this.vsClashHit = false;
+          this.vsSeq += 1;
+          this.vsWhoosh = false;
+          this.vsSparkT = 0;
+          this.sfx.charge(); // the coil winds up: the turbines spin up under the count
+        }
+      }
+      if (this.vsClash >= 0) {
+        this.vsClash += dt; // ...and it never resets: the fists stay locked until the transition covers the shot
+        if (!this.vsClashHit && this.vsClash >= VS_CLASH_HIT) {
+          this.vsClashHit = true;
+          this.vsClashImpact();
+        }
+      }
+      this.vsShakeT = Math.max(0, this.vsShakeT - dt * 1.6);
+      this.vsKick = this.vsClash >= 0 ? THREE.MathUtils.clamp((this.vsClash - VS_CLASH_HIT + 0.10) / 0.14, 0, 1) : 0;
+      if (this.vsClash >= 0) {
+        // THE CLASH OWNS THE BODY: both machines throw their right hand on the clashing beat (vsClashState), and the
+        // second team Titan — who is not in the duel — keeps his lobby stare-down.
+        this.menuHero.animate(this.vsClashAnim('hero'), dt);
+        if (this.vsFoe) this.vsFoe.robot.animate(this.vsClashAnim('foe'), dt);
+        if (this.vsFoe2) this.vsFoe2.robot.animate(this.heroAnimState(this.heroPose, t + 0.6, 0, 0, true), dt);
+        this.vsClashFx(dt);
+        return;
+      }
       if (this.vsFoe) this.vsFoe.robot.animate(this.heroAnimState(heroPose, t, 0, 0, true), dt);
       if (this.vsFoe2) this.vsFoe2.robot.animate(this.heroAnimState(heroPose, t + 0.6, 0, 0, true), dt);
       this.menuHero.animate(this.heroAnimState(heroPose, t, 0, 0), dt);
@@ -5884,7 +6780,9 @@ export class Game {
       // the superhero landing, boxer's cut: BOTH fists driven straight down into the canvas either side of the
       // knees, arms locked, shoulders square, head down then up — one symmetric, planted, menacing shape
       const landFist = P(-0.58, -0.06, 0.34, -0.1);
-      const open = P(-1.5, 0.1, 1.15, -0.5); // the arms fly open as he comes out of the tuck
+      // out of the tuck the arms swing up and down FORWARD, in front of the body, and reach ahead of him to spot
+      // the canvas — the hands never fly out to the sides (that is the shape that reads as flailing, not flipping)
+      const open = P(-1.85, -0.12, 0.42, -0.95);
       const inAir = f.state === 'air' ? 1 : 0;
       const from = f.sprinting ? RUNARM : GUARD; // the load grows out of the running arm swing, not out of the guard
       const base0 = lerpPose(lerpPose(lerpPose(from, loadA, pre), open, Math.min(1, (1 - tk) * 1.4) * inAir), tuckA, tk);
@@ -6025,10 +6923,11 @@ export class Game {
       rl = fb.rl;
       kk = fb.kk;
     } else if (f.swagger !== 0 && this.phase === 'walk') {
-      // THE STRUT (ring walk). Everything here hangs on the LIVE STRIDE (robot.stride): the arms swing loose and big
-      // against the legs, the elbow folds as the arm comes forward and opens as it goes back, the shoulders roll
-      // against the hips, the weight drops onto each stance leg — so the body never stands still while the legs
-      // walk. The show is scripted on the strut's progress `sw` and layered ON TOP of that swing, each moment
+      // THE STRUT (ring walk). Everything here hangs on the LIVE STRIDE (robot.stride): the fists stay up where a
+      // fighter carries them and the shoulder drives the arm against the leg (the elbow folds as it comes forward,
+      // opens as it goes back), the shoulders roll against the hips, the weight drops onto each stance leg — so the
+      // body never stands still while the legs walk, and never reads as a machine out for a stroll either.
+      // The show is scripted on the strut's progress `sw` and layered ON TOP of that swing, each moment
       // overlapping the next: arms raised at the gate → arms open low to the crowd → the left fist pumped high at the
       // stands (still pumping with the step, head turned to that side) → the right → a double chest pound →
       // a point straight at the ring → the arms drop into the running swing.
@@ -6038,14 +6937,16 @@ export class Game {
       const st = (a: number, b: number) => THREE.MathUtils.smoothstep(sw, a, b);
       const fwdL = Math.max(0, -g); // the left arm is forward
       const fwdR = Math.max(0, g);
-      const armL = P(-0.3 + g * 0.6, 0.08, 0.46, -0.78 - fwdL * 0.55 + fwdR * 0.22);
-      const armR = P(-0.3 - g * 0.6, 0.08, 0.46, -0.78 - fwdR * 0.55 + fwdL * 0.22);
-      const bothUp = P(-2.8 - gs * 0.08, -0.1, 0.55, -0.4);
-      const pumpL = P(-2.72 + g * 0.2, -0.14, 0.42, -0.5 + fwdR * 0.12);
-      const pumpR = P(-2.72 - g * 0.2, -0.14, 0.42, -0.5 + fwdL * 0.12);
+      const armL = P(-0.78 + g * 0.42, -0.2, 0.2, -1.6 - fwdL * 0.4 + fwdR * 0.16);
+      const armR = P(-0.78 - g * 0.42, -0.2, 0.2, -1.6 - fwdR * 0.4 + fwdL * 0.16);
+      // the crowd beats are the same beats, delivered like a fighter: the fist goes up with the elbow still folded,
+      // the arms stay close to the body and the salute stays a salute — nothing here is a straight-armed wave
+      const bothUp = P(-2.5 - gs * 0.06, -0.14, 0.4, -0.85);
+      const pumpL = P(-2.52 + g * 0.18, -0.16, 0.34, -0.95 + fwdR * 0.12);
+      const pumpR = P(-2.52 - g * 0.18, -0.16, 0.34, -0.95 + fwdL * 0.12);
       const pound = P(-0.1, -1.0, -0.85, -1.9);
-      const poundOpen = P(-1.6, -0.5, 1.2, -2.0);
-      const point = P(-1.62 - g * 0.05, -0.15, 0.15, -0.1);
+      const poundOpen = P(-1.35, -0.62, 0.85, -2.1);
+      const point = P(-1.62 - g * 0.05, -0.15, 0.15, -0.35);
       const gateUp = st(-1, -0.45) * (1 - st(0.0, 0.17)); // up at the gate, down into the swing as he walks
       const wL = st(0.18, 0.28) * (1 - st(0.38, 0.47));
       const wR = st(0.44, 0.54) * (1 - st(0.62, 0.71));
@@ -6067,8 +6968,9 @@ export class Game {
       // chest out, shoulders rolling against the hips with every step, the weight dropping onto each stance leg
       tw = (-g * 0.26 + (wL - wR) * 0.2 - wPt * 0.14) * show;
       rl = (g * 0.085 + (wL - wR) * 0.05) * show;
-      ln = lerp(-0.12 - gateUp * 0.06 + thump * 0.25 + wPt * 0.1, 0.16, toRun);
-      dp = lerp(0.1 + gs * gs * 0.05 + thump * 0.12, 0.2, toRun);
+      // chin down and a low, wide, planted stance: he walks the runway like he owns the ring, not like a parade
+      ln = lerp(0.03 - gateUp * 0.05 + thump * 0.2 + wPt * 0.06, 0.16, toRun);
+      dp = lerp(0.19 + gs * gs * 0.05 + thump * 0.1, 0.2, toRun);
       kk = 24 + thump * 40;
       f.headYaw = ((wL - wR) * 0.85 - wPt * 0.12) * show; // he looks at the stands he is playing to
     } else if (f.riseOut > 0 && !f.blocking) {
@@ -6116,12 +7018,18 @@ export class Game {
       // idle guard with subtle bouncing
       // Time-based wobble only while standing. While walking, the bob / arm swing / pelvis roll all come from
       // the stride itself (robot.ts), so they stay in sync with the footsteps instead of fighting them.
-      const wk = Math.min(1, f.speed / 3.5);
+      // A FIGHTER'S WALK, not a stroll: the moment he is moving on his feet the fists come up to the jaw, the
+      // elbows tuck in over the ribs and the chest drops over the hips — the stance he fights from, carried with
+      // him. The weight of the stride comes from under him (robot.ts drives the pelvis sink, the toe roll and the
+      // footfalls straight out of the steps), so the arms never have to swing loose to sell the walk.
+      const wk = THREE.MathUtils.clamp(f.speed / 3.5, 0, 1);
       const idle = 1 - wk;
+      const stalk = wk * wk * (3 - 2 * wk);
       const sw = Math.sin(t * 4) * 0.06 * idle;
-      a0 = { ...GUARD, sx: GUARD.sx + sw };
-      a1 = { ...GUARD, sx: GUARD.sx - sw };
-      dp = 0.15 + wk * 0.02 + Math.sin(t * 5.2) * 0.035 * idle;
+      a0 = lerpPose({ ...GUARD, sx: GUARD.sx + sw }, WALKG, stalk);
+      a1 = lerpPose({ ...GUARD, sx: GUARD.sx - sw }, WALKG, stalk);
+      ln = lerp(ln, 0.1 + stalk * 0.05, stalk); // chin down, chest over the hips: he walks INTO the fight
+      dp = 0.15 + stalk * 0.08 + Math.sin(t * 5.2) * 0.035 * idle; // a lower, springier stance than standing
       rl = Math.sin(t * 2.6) * 0.03 * idle;
       // sprinting: elbows bent and driving, torso leaning into the run (only when actually sprinting, so W/A/S/D boxing footwork keeps the guard up!)
       const ru = f.sprinting ? THREE.MathUtils.clamp((f.speed / f.scale - 6.4) / 3.2, 0, 1) : 0;
@@ -6137,8 +7045,10 @@ export class Game {
     // ---------------- HIT REACTION LAYER ----------------
     // A landed punch must read as a punch that LANDED — never as a guard that just did not work. So while the hit
     // impulse is live the arms leave the guard entirely and react to WHERE the fist went in:
-    //  • head shot → the guard is blown open: the arm on the side he is thrown towards whips up and out, the other
-    //    one drops away from the face; an uppercut throws both arms higher and the torso back;
+    //  • head shot → the guard is blown open: the arm on the side he is thrown towards whips up ACROSS the face —
+    //    elbow folded, hand still between the fist and his chin — while the other one stays tucked in tight; an
+    //    uppercut throws both arms higher and the torso back. Broken open, yes; thrown wide like a man who has
+    //    stopped defending himself, never — that is what an arm spread out to the side reads as;
     //  • body shot → he folds over the fist: both forearms clamp across the stomach, shoulders in, torso bent.
     // The weight comes from the smoothed hit impulse (instant snap, ~0.4 s relax) so it transitions on its own into
     // the stagger wobble / the guard coming back up. A punch that is actually BLOCKED never gets here.
@@ -6147,10 +7057,10 @@ export class Game {
     if (wF > 0.01) {
       const up = Math.max(0, f.hitUpV);
       const bodyK = THREE.MathUtils.clamp(1 - f.hitPt + Math.max(0, -f.hitUpV) * 0.7, 0, 1);
-      const openNear = P(-1.45 - up * 0.55, 0.3, 1.2 + up * 0.25, -0.7);
-      const openFar = P(-0.4 + up * 0.1, 0.05, 0.62, -1.2);
+      const openNear = P(-1.5 - up * 0.3, 0.02, 0.55 + up * 0.12, -1.55);
+      const openFar = P(-0.42 + up * 0.08, -0.12, 0.24, -1.85);
       const clutch = P(-0.55, -0.62, -0.14, -2.0);
-      const nearIs0 = f.hitSign > 0; // thrown towards his left → the left arm (index 0) is the one flung out
+      const nearIs0 = f.hitSign > 0; // thrown towards his left → the left arm (index 0) is the one that whips up
       const r0 = lerpPose(nearIs0 ? openNear : openFar, clutch, bodyK);
       const r1 = lerpPose(nearIs0 ? openFar : openNear, clutch, bodyK);
       a0 = lerpPose(a0, r0, wF);
@@ -6697,19 +7607,32 @@ export class Game {
           const sep = 2.75;
           const fit = aspect < 1.5 ? 1.5 / Math.max(0.6, aspect) : 1;
           const punch = this.vsPunch * this.vsPunch;
-          const camDist = 9.6 * fit * (1 - punch * 0.07);
+          // THE CLASH CAMERA: breathe back a hair as the machines load up, then creep in with them through the
+          // coil, DIVE on the fists as they meet — and lift the look onto the contact patch, which is exactly where
+          // the two knuckles touch (VS_CLASH_POINT is measured on the rig, not guessed).
+          const wind = this.vsClash >= 0 ? THREE.MathUtils.clamp(this.vsClash / VS_CLASH_HIT, 0, 1) : 0;
+          const build = wind * wind * (3 - 2 * wind); // ease-in-out: the lens creeps, it does not slide
+          const dive = this.vsKick;
+          const clashZoom = 1 - 0.035 * Math.sin(Math.PI * build) + 0.10 * build * build - 0.26 * dive;
+          const clashLift = dive * (VS_CLASH_POINT.y - 5.45) + build * 0.20; // the look rises onto the contact patch
+          const clashLookZ = build * 0.9 + dive * 0.8; // ...and forward onto the gloves, so the fists hold the middle
+          const camDist = 9.6 * fit * (1 - punch * 0.07) * clashZoom;
+          // the clash turns the machines to face each other and walks them into each other (see VS_CLASH_SQUARE /
+          // VS_CLASH_STEP) — the marks close up, the chests square at the opponent, and the fists meet between them
+          const turnH = this.vsClash >= 0 ? vsClashState('hero', this.vsClash).yaw : 0;
+          const turnF = this.vsClash >= 0 ? vsClashState('foe', this.vsClash).yaw : 0;
           this.menuHero.root.position.set(heroX - sep, 0, heroZ);
-          this.menuHero.root.rotation.y = 0.42;
+          this.menuHero.root.rotation.y = 0.42 + turnH;
           const foes = [this.vsFoe, this.vsFoe2];
           foes.forEach((f, i) => {
             if (!f) return;
             const second = i === 1;
             f.robot.root.position.set(heroX + sep + (second ? 2.4 : 0), 0, heroZ - (second ? 2.6 : 0));
-            f.robot.root.rotation.y = -0.42 - (second ? 0.15 : 0);
+            f.robot.root.rotation.y = -0.42 - (second ? 0.15 : 0) - (second ? 0 : turnF);
             f.robot.root.visible = this.vs!.stage !== 'search';
           });
-          tp = new THREE.Vector3(heroX, 5.55 - punch * 0.12, heroZ + camDist);
-          tl = new THREE.Vector3(heroX, 5.45, heroZ);
+          tp = new THREE.Vector3(heroX, 5.55 - punch * 0.12 + clashLift, heroZ + camDist);
+          tl = new THREE.Vector3(heroX + VS_CLASH_POINT.x * build, 5.45 + clashLift, heroZ + clashLookZ);
         } else if (this.menuCamMode === 'full') {
           const camDist = 13.0 * distScale;
           tp = new THREE.Vector3(heroX, 3.58, heroZ + camDist);
@@ -6943,7 +7866,7 @@ export class Game {
     }
 
     cam.position.copy(this.camPos);
-    if (this.phase !== 'menu' || this.menuCamMode === 'arena') {
+    if (this.phase !== 'menu' || this.menuCamMode === 'arena' || this.vsShakeT > 0.002) {
       // 3D Critically-Damped Spring-Damper for Heavy Robot Impact Recoil (100% smooth, ZERO random jitter!)
       const stepDt = Math.min(0.033, raw);
       const springK = 185;
@@ -6999,20 +7922,46 @@ export class Game {
       cam.lookAt(this.camLook);
     }
     cam.updateProjectionMatrix();
-    this.bloom.strength = 0.038 + this.trauma * 0.045 + this.flashAmt * 0.03;
+    // THE GLOW: the rig breathes a real bloom, and every heavy blow and every flash pushes it — but only a
+    // little, and never past the point where the dark of the hall starts turning grey
+    if (this.phase === 'menu') {
+      // THE LOBBY IS A PORTRAIT, NOT A LIGHT SHOW. The hero is lit by one hard key in a dark bay, so a lot of his
+      // plating sits right at white; a threshold low enough to catch that turns the armour itself into glare and
+      // the whole shot goes milky. Up here the pass is tightened — threshold well above the plating, strength and
+      // radius down — so ONLY what is genuinely emissive (optics, core, the light bars) carries a halo, and the
+      // machine reads as a machine. Everywhere else the in-match values below are the ones that matter.
+      this.bloom.threshold = 1.5;
+      this.bloom.strength = 0.22;
+      this.bloom.radius = 0.5;
+    } else {
+      this.bloom.threshold = 1.16;
+      this.bloom.strength = Math.min(0.72, 0.4 + this.trauma * 0.14 + this.flashAmt * 0.18);
+      this.bloom.radius = 0.6;
+    }
   }
 
   // ------------------------------------------------------------ popups + hud
+  /**
+   * ONE COLUMN ON THE LEFT. The popup is still spawned only when its world point is in front of the camera (so a
+   * print for something that happened behind you never shows), but it is no longer pinned to that point on screen —
+   * the old code dropped the damage numbers and the call-outs right on top of the fighters, which buried the action.
+   * Now every popup is printed into the left column (see popLanes): the first free lane wins, and if every lane is
+   * busy the oldest one is recycled, so even a 5-hit combo prints as a tidy stack instead of a pile.
+   */
   private popup(p: THREE.Vector3, text: string, cls: string) {
     const v = p.clone().project(this.camera);
     if (v.z > 1 || v.z < -1) return;
-    const w = this.container.clientWidth;
     const h = this.container.clientHeight;
+    const now = performance.now();
+    let lane = this.popLanes.findIndex((t) => t <= now);
+    if (lane < 0) lane = this.popLanes.indexOf(Math.min(...this.popLanes));
+    this.popLanes[lane] = now + 1000;
     const el = document.createElement('div');
-    el.className = `popup ${cls}`;
+    el.className = `popup pop-left ${cls}`;
     el.textContent = text;
-    el.style.left = `${(v.x * 0.5 + 0.5) * w + (Math.random() - 0.5) * 40}px`;
-    el.style.top = `${(-v.y * 0.5 + 0.5) * h}px`;
+    // 232px clears the left HUD stack (the player plate and the TANGAN/TARGET/CTR panel); from there the lanes run
+    // down the column in 40px steps. Five lanes is more than a full 4-hit combo + its damage number.
+    el.style.top = `${Math.max(232, h * 0.33) + lane * 40}px`;
     this.popupLayer.appendChild(el);
     window.setTimeout(() => el.remove(), 1100);
   }
@@ -7062,6 +8011,10 @@ export class Game {
       helmetSkin: this.helmetSkin,
       gloveSkin: this.gloveSkin,
       armorSkin: this.armorSkin,
+      fps: this.fps,
+      gfx: this.tierCfg().name,
+      gfxMode: this.qMode,
+      bright: this.bright,
       team:
         this.teamMode && this.ally && this.enemy2 && this.def2
           ? {

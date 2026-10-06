@@ -397,7 +397,7 @@ function createCinematicVignetteTexture(): THREE.CanvasTexture {
   return tex;
 }
 
-const GUARD: Pose = { sx: -0.72, sy: -0.5, sz: 0.04, ex: -2.0 };
+export const GUARD: Pose = { sx: -0.72, sy: -0.5, sz: 0.04, ex: -2.0 };
 const BLOCK: Pose = { sx: -1.0, sy: -0.75, sz: 0, ex: -2.2 };
 // dazed, but still a fighter: the hands stay half up in front of the chest (elbows folded) — an arm thrown wide
 // open is a man who has given up on his guard, and he never has
@@ -574,6 +574,87 @@ const MOVE_EXTRA: Record<MoveId, { width: number; launch: boolean; unblock: bool
   skyhook: { width: 2.4, launch: true, unblock: true },
   grab: { width: 2.4, launch: true, unblock: true },
   counter: { width: 1.7, launch: false, unblock: false },
+};
+
+// ------------------------------------------------------------------ THE VS FIST CLASH
+/**
+ * THE FIST CLASH ON THE VS SCREEN. In the last second of the lock-in count both machines throw a full-power
+ * straight at each other and lock fists in the middle of the frame — an Overdrive-weight collision, not a tap.
+ *
+ * The track below is the ARM THAT FACES THE MIDDLE (arm index 0 for the hero; the opponent is posed as his mirror
+ * image, see heroAnimState's `mirror` flag, which puts the same pose on the arm that faces the middle on his side
+ * too). Both keys were measured on the rig, not eyeballed: the wind-up pulls the fist 1.8 m back to the ribs and
+ * the lockout throws it 1.58 m inwards, so the two fists meet 0.37 m apart on the centre line — measured with the
+ * real Robot rig, see clashtest.mjs.
+ */
+export const VS_CLASH_AT = 1.56; // s into the 3-second lock-in count: the coil, then the fists meet as the "1" lands
+export const VS_CLASH_KEYS: Key[] = [
+  //         shoulder pitch / yaw / roll / elbow          twist   lean   lunge  dip    ease
+  k(0.0, P(-0.40, -0.30, 0.30, -2.30), 0.42, 0.02, 0, 0.16, 'io'), // the load — fist drawn back to the ribs
+  k(0.20, P(-0.22, -0.42, 0.36, -2.42), 0.54, 0.00, 0, 0.21, 'io'), // ...the coil, loaded as deep as it goes
+  // THE CLASH: the exact shape of the Overdrive straight's throw — the same 'in' ease, the same locked-out elbow —
+  // so it lands at Overdrive WEIGHT and not faster (clashtest.mjs §1 measures the clash against the real bolt keys)
+  k(0.44, P(-1.92, 0.34, 0.30, -0.06), -0.34, 0.30, 0, 0.15, 'in'),
+  k(0.66, P(-1.86, 0.30, 0.34, -0.10), -0.22, 0.35, 0, 0.19, 'io'), // the push — both machines drive into it
+  k(0.94, P(-1.94, 0.36, 0.28, -0.04), -0.30, 0.29, 0, 0.13, 'io'), // ...and it holds, straining, servo to servo
+];
+export const VS_CLASH_HIT = 0.44; // the frame the two fists meet (the third key)
+export const VS_CLASH_DUR = 0.94; // the whole clash, from the load to the held lock
+/**
+ * WHERE THE TWO FISTS ACTUALLY MEET, measured on the rig with the real track (clashtest.mjs §2 measures it too, and
+ * fails if this point drifts more than half a metre from the geometry): on the centre line between the two marks,
+ * chin height, thrown out towards the lens. The impact flash, the shock ring and the sparks are drawn HERE, and the
+ * clash camera lifts its look onto it — so the light is always on the contact patch, not near it.
+ * (x is relative to the stage centre, z is in front of the two marks, which stand at z = 0.)
+ */
+export const VS_CLASH_POINT = { y: 5.75, z: 3.05 };
+/** the sampled clash arm: the pose plus the body channels the rig springs towards. */
+export const vsClashPose = (t: number): Key => sampleKeys(VS_CLASH_KEYS, t);
+/** the frame the fists meet, on the VS stage's own clock: the "1" of the count, one second before the bell. */
+export const VS_CLASH_AT_HIT = VS_CLASH_AT + VS_CLASH_HIT;
+
+// ------------------------------------------------------------------ THE TRANSITION (menu → ring) SETTING
+/**
+ * HOW THE LOBBY HANDS OVER TO THE RING. The clash is the last thing you see on the VS screen; the transition is
+ * what covers the cut from that shot into the ring walk. Every one of them plays over the SAME beat — the overlay
+ * covers the screen, the match is launched underneath it, the overlay opens again on the arena — so switching this
+ * setting can never change WHEN the fight starts, only how it is dressed.
+ */
+export type TransId = 'zoom' | 'flash' | 'wipe' | 'shock' | 'cut';
+export interface TransMeta {
+  id: TransId;
+  name: string;
+  hint: string;
+  /** ms until the screen is fully covered (and how long it STAYS covered). The bell goes at 1000 ms
+   *  (the lock-in count is 3 s and the clash fires on the "1"), so every kind covers well before that. */
+  cover: number;
+  /** ms of the reveal on the far side, on top of the cover */
+  open: number;
+}
+/** the beat between the fist clash and the bell: the transition has to have covered the screen by then */
+export const TRANS_COVER_LEAD = 1000;
+export const TRANSITIONS: TransMeta[] = [
+  { id: 'zoom', name: 'PUNCH ZOOM', hint: 'zoom ke adu tinju lalu gelap, masuk ring', cover: 1080, open: 620 },
+  { id: 'flash', name: 'FLASH PUTIH', hint: 'hentakan jadi kilat putih, pecah ke arena', cover: 1080, open: 760 },
+  { id: 'wipe', name: 'WIPE BAJA', hint: 'pelat baja menyapu layar kiri ke kanan', cover: 1080, open: 620 },
+  { id: 'shock', name: 'GELOMBANG', hint: 'cincin hentakan melebar, gelap, lalu pulih', cover: 1080, open: 700 },
+  { id: 'cut', name: 'HARD CUT', hint: 'tanpa transisi — hentakan langsung ke ring', cover: 90, open: 130 },
+];
+const LS_TRANS = 'steel-titans-transition-v1';
+export const loadTrans = (): TransId => {
+  try {
+    const v = localStorage.getItem(LS_TRANS) as TransId | null;
+    return v && TRANSITIONS.some((t) => t.id === v) ? v : 'zoom';
+  } catch {
+    return 'zoom';
+  }
+};
+export const saveTrans = (id: TransId) => {
+  try {
+    localStorage.setItem(LS_TRANS, id);
+  } catch {
+    /* ignore */
+  }
 };
 const GRAVITY = 34;
 
@@ -1284,6 +1365,13 @@ export class Game {
   /** the VS screen: the opponent (and the 2v2 partner) standing opposite the hero in the hangar */
   private vs: { idx: number; idx2: number; stage: 'search' | 'found' | 'lock' } | null = null;
   private vsPunch = 0; // the lens punch-in on the reveal / the lock, decays
+  // THE FIST CLASH (see VS_CLASH_KEYS): vsLockT drives the lock-in count, vsClash runs the clash track,
+  // vsShake is the impact ring-down that lets the lobby camera shake for a beat (normally it never does).
+  private vsLockT = 0;
+  private vsClash = -1;
+  private vsClashHit = false;
+  private vsShakeT = 0;
+  private vsKick = 0; // 0..1 lens dive as the fists meet
   private vsFoe: Fighter | null = null;
   private vsFoe2: Fighter | null = null;
   private menuHeroPedestal: THREE.Group;
@@ -2251,6 +2339,10 @@ export class Game {
       this.vs = null;
       this.vsFoe = null;
       this.vsFoe2 = null;
+      this.vsClash = -1;
+      this.vsLockT = 0;
+      this.vsShakeT = 0;
+      this.vsKick = 0;
       this.hangar.setVsBackdrop(false);
       if (this.menuHero) this.menuHero.root.rotation.y = this.heroYaw;
       return;
@@ -2287,6 +2379,16 @@ export class Game {
       } else if (stage === 'lock') {
         this.vsPunch = 0.7;
         this.sfx.ready();
+        // the count that ends in the bell: the clash fires on its own beat inside it (see animateMenuHero)
+        this.vsLockT = 0;
+        this.vsClash = -1;
+        this.vsClashHit = false;
+        this.vsShakeT = 0;
+        this.vsKick = 0;
+      } else {
+        this.vsLockT = 0;
+        this.vsClash = -1;
+        this.vsClashHit = false;
       }
     }
     this.vs = { idx, idx2, stage };
@@ -3188,12 +3290,16 @@ export class Game {
       const dt = this.freeze > 0 ? 0 : raw * this.timeScale;
       this.time += raw;
       if (this.phase === 'menu') {
-        this.trauma = 0;
-        this.camBump = 0;
-        this.camPush = 0;
-        this.fovKick = 0;
-        this.camImp.set(0, 0, 0);
-        this.camImpVel.set(0, 0, 0);
+        // ...except through the fist clash: the lobby camera is a rock-solid portrait, and the one thing allowed to
+        // move it is the two machines slamming their fists together (vsShakeT, set on the impact).
+        if (this.vsShakeT <= 0.002) {
+          this.trauma = 0;
+          this.camBump = 0;
+          this.camPush = 0;
+          this.fovKick = 0;
+          this.camImp.set(0, 0, 0);
+          this.camImpVel.set(0, 0, 0);
+        }
         this.flashAmt = 0;
       }
       if (dt > 0) {
@@ -6304,7 +6410,12 @@ export class Game {
   }
 
   private heroAnimState(pose: HeroPose, t: number, mx: number, my: number, mirror = false) {
-    const { a0, a1, dp, tw, ln, rl } = this.heroArms(pose, t, mx, my);
+    // THE FIST CLASH OWNS THE BODY while it runs: the lobby stare-down is handed over to the loaded arm, the throw
+    // and the locked fists (see VS_CLASH_KEYS). `mirror` does the rest — the opponent is the hero's reflection, so
+    // the same pose puts his arm on the side that faces the middle of the frame, and the two fists meet on the
+    // centre line (measured: 0.37 m apart, see clashtest.mjs).
+    const cl = this.vsClash >= 0 ? this.vsClashArms() : null;
+    const { a0, a1, dp, tw, ln, rl } = cl ?? this.heroArms(pose, t, mx, my);
     // `mirror` is the reflection of the pose across the body's centre line: the arms swap and every lateral
     // channel (shoulder twist, hip roll, the look) flips sign — the VS opponent squares up as the hero's mirror image
     return {
@@ -6325,7 +6436,7 @@ export class Game {
       hitUp: 0,
       fall: 0,
       time: t,
-      glow: 0.45 + Math.sin(t * 2.5) * 0.09, // the lobby pose glows, it does not flare
+      glow: cl ? cl.glow : 0.45 + Math.sin(t * 2.5) * 0.09, // the lobby pose glows, it does not flare — the clash does
       flash: 0,
       tilt: 0,
       dash: 0,
@@ -6334,6 +6445,52 @@ export class Game {
       lookX: mirror ? -mx : mx,
       lookY: my,
     };
+  }
+
+  /**
+   * THE CLASH POSE. The inward arm throws (see VS_CLASH_KEYS) and the other hand stays up in the guard — a machine
+   * does not drop its guard to pose. `shock` is the flare at the instant the fists meet; past it the locked arm
+   * trembles, because the two machines are pushing against each other rather than holding a still.
+   */
+  private vsClashArms(): { a0: Pose; a1: Pose; tw: number; ln: number; dp: number; rl: number; glow: number } {
+    const s = vsClashPose(this.vsClash);
+    const shock = Math.max(0, 1 - Math.abs(this.vsClash - VS_CLASH_HIT) / 0.14);
+    const strain = this.vsClash > VS_CLASH_HIT ? 1 : 0;
+    const tremble = strain ? Math.sin(this.vsClash * 46) * 0.02 : 0;
+    return {
+      a0: { ...s.p, ex: s.p.ex + tremble * 5 },
+      a1: { ...GUARD, sx: GUARD.sx - 0.10 * shock },
+      tw: s.twist,
+      ln: s.lean,
+      dp: s.dip,
+      rl: tremble * 0.6,
+      glow: 0.45 + 1.05 * shock + strain * 0.25,
+    };
+  }
+
+  /**
+   * THE MOMENT THE FISTS MEET: a white core at the contact point 6.5 m up between the two machines, a shock ring,
+   * sparks off both knuckles, the crowd, and the lens — which dives in 22 % and takes the hit through the
+   * spring-damper (the only time the lobby camera is allowed to shake).
+   */
+  private vsClashImpact() {
+    const px = HANGAR_POS.x; // the centre line between the two marks
+    const pz = HANGAR_POS.z + VS_CLASH_POINT.z;
+    const y = VS_CLASH_POINT.y;
+    this.fx.flash(new THREE.Vector3(px, y, pz), 3.4, 0xfff4d6, 0.26);
+    this.fx.impactWave(new THREE.Vector3(px, y, pz), new THREE.Vector3(0, 0.15, 1), 0xffd9a0, 3.2, 0.3);
+    this.fx.ring(px, pz, 0xffe0a0, 5.2, 0.42, y);
+    this.fx.spark(new THREE.Vector3(px, y, pz), 26, 7.5, 0xffe6b0, new THREE.Vector3(0, 0.2, 1), 1.5, 0.5, 12);
+    this.sfx.hit(1);
+    this.sfx.crackle(1);
+    this.sfx.roar(0.85, 1.6);
+    this.trauma = 0.92;
+    this.camBump = 0.42;
+    this.camPush = 0.14;
+    this.fovKick = -3.2;
+    this.camImp.set(0, -0.3, 0.22);
+    this.vsShakeT = 1;
+    this.hype = Math.min(1, this.hype + 0.6);
   }
 
   private animateMenuHero(dt: number) {
@@ -6347,6 +6504,23 @@ export class Game {
       // punches in on the reveal.
       const heroPose: HeroPose = this.heroPose;
       this.vsPunch = Math.max(0, this.vsPunch - dt * 2.2);
+      // ---- THE FIST CLASH: the lock-in count is the clock, and the fists meet exactly as the "1" lands on screen
+      if (this.vs.stage === 'lock' && this.vsClash < 0) {
+        this.vsLockT += dt;
+        if (this.vsLockT >= VS_CLASH_AT) {
+          this.vsClash = 0;
+          this.vsClashHit = false;
+        }
+      }
+      if (this.vsClash >= 0) {
+        this.vsClash += dt; // ...and it never resets: the fists stay locked until the transition covers the shot
+        if (!this.vsClashHit && this.vsClash >= VS_CLASH_HIT) {
+          this.vsClashHit = true;
+          this.vsClashImpact();
+        }
+      }
+      this.vsShakeT = Math.max(0, this.vsShakeT - dt * 1.6);
+      this.vsKick = this.vsClash >= 0 ? THREE.MathUtils.clamp((this.vsClash - VS_CLASH_HIT + 0.10) / 0.14, 0, 1) : 0;
       if (this.vsFoe) this.vsFoe.robot.animate(this.heroAnimState(heroPose, t, 0, 0, true), dt);
       if (this.vsFoe2) this.vsFoe2.robot.animate(this.heroAnimState(heroPose, t + 0.6, 0, 0, true), dt);
       this.menuHero.animate(this.heroAnimState(heroPose, t, 0, 0), dt);
@@ -7215,7 +7389,13 @@ export class Game {
           const sep = 2.75;
           const fit = aspect < 1.5 ? 1.5 / Math.max(0.6, aspect) : 1;
           const punch = this.vsPunch * this.vsPunch;
-          const camDist = 9.6 * fit * (1 - punch * 0.07);
+          // THE CLASH CAMERA: back off a touch as the machines load up, then DIVE on the fists as they meet — and
+          // lift the look onto the contact point, 6.5 m up, which is where the two knuckles actually touch.
+          const wind = this.vsClash >= 0 ? THREE.MathUtils.clamp(this.vsClash / VS_CLASH_HIT, 0, 1) : 0;
+          const dive = this.vsKick;
+          const clashZoom = 1 + 0.07 * wind * (1 - dive) - 0.22 * dive;
+          const clashLift = dive * (VS_CLASH_POINT.y - 5.45); // the look rises onto the contact patch as it lands
+          const camDist = 9.6 * fit * (1 - punch * 0.07) * clashZoom;
           this.menuHero.root.position.set(heroX - sep, 0, heroZ);
           this.menuHero.root.rotation.y = 0.42;
           const foes = [this.vsFoe, this.vsFoe2];
@@ -7226,8 +7406,8 @@ export class Game {
             f.robot.root.rotation.y = -0.42 - (second ? 0.15 : 0);
             f.robot.root.visible = this.vs!.stage !== 'search';
           });
-          tp = new THREE.Vector3(heroX, 5.55 - punch * 0.12, heroZ + camDist);
-          tl = new THREE.Vector3(heroX, 5.45, heroZ);
+          tp = new THREE.Vector3(heroX, 5.55 - punch * 0.12 + clashLift, heroZ + camDist);
+          tl = new THREE.Vector3(heroX, 5.45 + clashLift, heroZ);
         } else if (this.menuCamMode === 'full') {
           const camDist = 13.0 * distScale;
           tp = new THREE.Vector3(heroX, 3.58, heroZ + camDist);
@@ -7461,7 +7641,7 @@ export class Game {
     }
 
     cam.position.copy(this.camPos);
-    if (this.phase !== 'menu' || this.menuCamMode === 'arena') {
+    if (this.phase !== 'menu' || this.menuCamMode === 'arena' || this.vsShakeT > 0.002) {
       // 3D Critically-Damped Spring-Damper for Heavy Robot Impact Recoil (100% smooth, ZERO random jitter!)
       const stepDt = Math.min(0.033, raw);
       const springK = 185;

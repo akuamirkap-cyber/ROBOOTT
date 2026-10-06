@@ -1,8 +1,8 @@
 import { useEffect } from 'react';
-import { OPPONENTS, PLAYER_NAME, ULTRA_COLOR, type GfxMode, type HudState } from '../game/Game';
+import { OPPONENTS, PLAYER_NAME, ULTRA_COLOR, type GfxMode, type HudState, type TransId } from '../game/Game';
 import type { SfxProfile } from '../game/audio';
 import { Emblem, Key } from './Emblem';
-import { BrightnessPicker, CamPicker, FootworkPicker, GfxPicker, IqPicker, SfxPicker, TierLadder } from './Pickers';
+import { BrightnessPicker, CamPicker, FootworkPicker, GfxPicker, IqPicker, SfxPicker, TierLadder, TransitionPicker } from './Pickers';
 import { TOURNEY_STAGES, modeOf, type Series } from '../game/progress';
 
 export function PauseMenu({
@@ -22,6 +22,8 @@ export function PauseMenu({
   tier,
   bright,
   onBright,
+  trans,
+  onTrans,
 }: {
   onResume: () => void;
   onMenu: () => void;
@@ -39,6 +41,8 @@ export function PauseMenu({
   tier?: string;
   bright: number;
   onBright: (b: number) => void;
+  trans: TransId;
+  onTrans: (id: TransId) => void;
 }) {
   return (
     <div className="absolute inset-0 z-20 flex items-center justify-center overflow-y-auto bg-black/70 p-4 backdrop-blur-sm">
@@ -62,6 +66,9 @@ export function PauseMenu({
           <GfxPicker value={gfx} onPick={onGfx} fps={fps} tier={tier} />
           <TierLadder tier={tier} />
           <BrightnessPicker value={bright} onPick={onBright} />
+        </div>
+        <div className="mt-4">
+          <TransitionPicker value={trans} onPick={onTrans} />
         </div>
         <div className="mt-5 grid grid-cols-2 gap-3">
           <button onClick={onResume} className="play-btn cut group relative overflow-hidden px-4 py-3 font-display text-2xl tracking-[0.15em]">

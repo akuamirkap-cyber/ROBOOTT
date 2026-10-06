@@ -13,11 +13,12 @@ import {
   type HeroPose,
   type HudState,
   type OpponentDef,
+  type TransId,
 } from '../game/Game';
 import { ARMOR_SKINS, GLOVE_SKINS, HELMET_SKINS } from '../game/build';
 import type { SfxProfile } from '../game/audio';
 import { Key, cssVar } from './Emblem';
-import { CamPicker, DifficultyPicker, FootworkPicker, IqPicker, SfxPicker } from './Pickers';
+import { CamPicker, DifficultyPicker, FootworkPicker, IqPicker, SfxPicker, TransitionPicker } from './Pickers';
 import { ACCOUNT_NAME, MODES, levelOf, tierOf, weekResetIn, wrcPoints, type ModeId, type Profile } from '../game/progress';
 import { Avatar, ProfileCard, ProfileSheet } from './Profile';
 import { Leaderboard, ModeDossier, ModeHub, type LobbyView } from './Modes';
@@ -48,6 +49,10 @@ export interface MenuProps {
   mode: ModeId;
   onMode: (m: ModeId) => void;
   onStartMode: (m: ModeId) => void;
+  /** the picked ring transition, and a live preview of it (see TRANSITIONS in Game.ts) */
+  trans: TransId;
+  onTrans: (id: TransId) => void;
+  onTransTry: () => void;
 }
 
 const act = (fn: () => void) => (e: MouseEvent<HTMLButtonElement>) => {
@@ -322,6 +327,9 @@ export function Menu({
   mode,
   onMode,
   onStartMode,
+  trans,
+  onTrans,
+  onTransTry,
 }: MenuProps) {
   const [tab, setTab] = useState<MenuTab>('lobby');
   const [showProfile, setShowProfile] = useState(false);
@@ -1345,6 +1353,9 @@ export function Menu({
                     </button>
                   ))}
                 </div>
+              </div>
+              <div className="lobby-subcard rounded-lg p-3.5">
+                <TransitionPicker value={trans} onPick={onTrans} onTry={onTransTry} />
               </div>
               <div className="lobby-subcard rounded-lg p-3.5">
                 <SfxPicker value={sfx} onPick={onSfx} />

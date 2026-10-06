@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { BRIGHTNESS_STEPS, CAM_MODES, FOOTWORK_STEPS, GFX_MODES, IQ_STEPS, QUALITY_TIERS, ULTRA_COLOR, type GfxMode } from '../game/Game';
+import { BRIGHTNESS_STEPS, CAM_MODES, FOOTWORK_STEPS, GFX_MODES, IQ_STEPS, QUALITY_TIERS, TRANSITIONS, ULTRA_COLOR, type GfxMode, type TransId } from '../game/Game';
 import { SFX_PROFILES, type SfxProfile } from '../game/audio';
 import { cssVar } from './Emblem';
 
@@ -279,6 +279,52 @@ export function BrightnessPicker({ value, onPick }: { value: number; onPick: (b:
       <div className="mt-1.5 text-[10px] leading-tight text-white/45">
         Menyetel exposure seluruh gambar (arena dan lobby) tanpa mengubah pencahayaan panggung — lampu, bloom dan
         warna tetap sama, hanya terangnya yang bergeser.
+      </div>
+    </div>
+  );
+}
+
+/**
+ * HOW THE LOBBY HANDS OVER TO THE RING. Every kind is dressed over the same beat — the fist clash on the VS screen,
+ * then the cover, then the bell under it — so this only changes the look, never when the fight starts. "COBA" plays
+ * the picked one over the lobby right now, so you can choose one without having to start a match.
+ */
+export function TransitionPicker({ value, onPick, onTry }: { value: TransId; onPick: (id: TransId) => void; onTry?: () => void }) {
+  const cur = TRANSITIONS.find((t) => t.id === value) ?? TRANSITIONS[0];
+  return (
+    <div>
+      <SectionTitle
+        right={
+          onTry ? (
+            <button onClick={onTry} className="pointer-events-auto border border-amber-300/60 bg-amber-400/15 px-2 py-0.5 font-tech text-[9px] font-bold tracking-[0.2em] text-amber-100 hover:bg-amber-400/30">
+              ▶ COBA
+            </button>
+          ) : null
+        }
+      >
+        TRANSISI MASUK RING
+      </SectionTitle>
+      <div className="grid grid-cols-2 gap-2">
+        {TRANSITIONS.map((t) => {
+          const on = t.id === value;
+          return (
+            <button
+              key={t.id}
+              onClick={() => onPick(t.id)}
+              className={`tile cut-sm pointer-events-auto relative px-3 py-2 text-left ${on ? 'tile-on' : ''}`}
+              style={cssVar('--c', '#ffd34a')}
+            >
+              <div className="font-display text-[15px] tracking-wider" style={{ color: on ? '#ffd34a' : '#ffffff' }}>
+                {t.name}
+              </div>
+              <div className="mt-0.5 text-[10px] leading-tight text-white/55">{t.hint}</div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 text-[10px] leading-tight text-white/45">
+        Terjadi tepat saat kedua robot mengadu tinju di layar VS: {cur.name.toLowerCase()} menutup potongan gambar ke
+        ring walk. Tekan ▶ COBA untuk melihatnya sekarang, tanpa harus memulai pertandingan.
       </div>
     </div>
   );

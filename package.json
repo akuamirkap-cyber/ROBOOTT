@@ -11,9 +11,10 @@
     "test:feet": "esbuild src/game/robot.ts --bundle --format=esm --platform=node --outfile=.__robot.mjs --external:three && node feettest.mjs",
     "test:cam": "esbuild src/game/cammath.ts --bundle --format=esm --platform=node --outfile=.__cam.mjs --external:three && node camtest.mjs",
     "test:crowd": "esbuild crowdscene.ts --bundle --format=esm --platform=node --outfile=.__crowdscene.mjs --external:three && node crowdtest.mjs",
-    "test": "npm run test:feet && npm run test:pose && npm run test:strike && npm run test:cam && npm run test:crowd",
+    "test": "npm run test:feet && npm run test:pose && npm run test:strike && npm run test:clash && npm run test:cam && npm run test:crowd",
     "test:pose": "esbuild src/game/robot.ts --bundle --format=esm --platform=node --outfile=.__robot.mjs --external:three && esbuild src/game/poses.ts --bundle --format=esm --platform=node --outfile=.__poses.mjs --external:three && node posetest.mjs",
-    "test:strike": "esbuild src/game/Game.ts --bundle --format=esm --platform=node --outfile=.__game.mjs --external:three && node striketest.mjs"
+    "test:strike": "esbuild src/game/Game.ts --bundle --format=esm --platform=node --outfile=.__game.mjs --external:three && node striketest.mjs",
+    "test:clash": "esbuild src/game/robot.ts --bundle --format=esm --platform=node --outfile=.__robot.mjs --external:three && esbuild src/game/Game.ts --bundle --format=esm --platform=node --outfile=.__game.mjs --external:three && node clashtest.mjs"
   },
   "dependencies": {
     "@types/three": "^0.186.0",

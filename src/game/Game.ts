@@ -1225,6 +1225,9 @@ export class Game {
   private raf = 0;
   private last = performance.now();
   private popupLayer: HTMLDivElement;
+  // HIT TEXT LIVES IN ONE COLUMN: every popup (damage numbers, COUNTER!/MISS/SLIP!/ROPE BOUNCE!) is anchored
+  // to the LEFT edge and stacked into lanes, so the numbers never cover the two fighters again.
+  private popLanes: number[] = [0, 0, 0, 0, 0];
   private flashEl: HTMLDivElement;
   private warnEl: HTMLDivElement; // God-of-War-style attack indicator (a ring that shrinks onto a button prompt)
   private warnRing: HTMLElement;
@@ -7533,16 +7536,27 @@ export class Game {
   }
 
   // ------------------------------------------------------------ popups + hud
+  /**
+   * ONE COLUMN ON THE LEFT. The popup is still spawned only when its world point is in front of the camera (so a
+   * print for something that happened behind you never shows), but it is no longer pinned to that point on screen —
+   * the old code dropped the damage numbers and the call-outs right on top of the fighters, which buried the action.
+   * Now every popup is printed into the left column (see popLanes): the first free lane wins, and if every lane is
+   * busy the oldest one is recycled, so even a 5-hit combo prints as a tidy stack instead of a pile.
+   */
   private popup(p: THREE.Vector3, text: string, cls: string) {
     const v = p.clone().project(this.camera);
     if (v.z > 1 || v.z < -1) return;
-    const w = this.container.clientWidth;
     const h = this.container.clientHeight;
+    const now = performance.now();
+    let lane = this.popLanes.findIndex((t) => t <= now);
+    if (lane < 0) lane = this.popLanes.indexOf(Math.min(...this.popLanes));
+    this.popLanes[lane] = now + 1000;
     const el = document.createElement('div');
-    el.className = `popup ${cls}`;
+    el.className = `popup pop-left ${cls}`;
     el.textContent = text;
-    el.style.left = `${(v.x * 0.5 + 0.5) * w + (Math.random() - 0.5) * 40}px`;
-    el.style.top = `${(-v.y * 0.5 + 0.5) * h}px`;
+    // 232px clears the left HUD stack (the player plate and the TANGAN/TARGET/CTR panel); from there the lanes run
+    // down the column in 40px steps. Five lanes is more than a full 4-hit combo + its damage number.
+    el.style.top = `${Math.max(232, h * 0.33) + lane * 40}px`;
     this.popupLayer.appendChild(el);
     window.setTimeout(() => el.remove(), 1100);
   }

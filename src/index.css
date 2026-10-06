@@ -62,6 +62,19 @@ body,
   30% { transform: translate(-50%, -75%) scale(1); }
   100% { transform: translate(-50%, -200%) scale(0.9); opacity: 0; }
 }
+/* THE LEFT COLUMN: anchored to the left edge instead of the fighters. `left` is set inline by the game; the
+   animation keeps the X origin at 0 so the text grows and drifts inwards from the edge, never off it. */
+.popup.pop-left {
+  left: 16px;
+  text-align: left;
+  animation: floaty-left 1s ease-out forwards;
+}
+@keyframes floaty-left {
+  0% { transform: translate(0, -30%) scale(0.4); opacity: 0; }
+  12% { transform: translate(5px, -60%) scale(1.35); opacity: 1; }
+  30% { transform: translate(9px, -75%) scale(1); }
+  100% { transform: translate(20px, -170%) scale(0.9); opacity: 0; }
+}
 .pop-dmg { color: #ffd35a; font-size: 36px; }
 .pop-big { color: #ff7a2a; font-size: 64px; }
 .pop-crit { color: #ff3d6a; font-size: 30px; }

@@ -132,7 +132,8 @@ export function Matchmaking({
       } else if (phase === 'found' && ph >= 3.8) {
         setPhase('lock');
       } else if (phase === 'lock') {
-        const c = 3 - Math.floor(ph);
+        // the lock-in count runs FAST: three beats of 0.68 s (the "1" lands at 1.36 s — the clash meets it mid-air)
+        const c = 3 - Math.floor(ph / 0.68);
         if (c !== last) {
           last = c;
           if (c > 0) {
@@ -168,14 +169,13 @@ export function Matchmaking({
   const stage = isTourney ? TOURNEY_STAGES[Math.min(series.step, TOURNEY_STAGES.length - 1)] : isTeam ? '2V2 TAG TEAM' : isPlay ? 'BEST OF 3' : `${tier.name} ${['', 'I', 'II', 'III'][division]}`;
   const foeName = found ? opp.name : SCAN_NAMES[scan % SCAN_NAMES.length];
   const prog = Math.min(1, t / searchFor);
-  const lockFrac = phase === 'lock' ? 1 - (pt % 1) : 0;
+  const lockFrac = phase === 'lock' ? 1 - ((pt % 0.68) / 0.68) : 0;
   const oppCol = ultra ? ULTRA_COLOR : opp.color;
   const myTop = topStats(me);
   const foeTop = topStats(foe);
 
   return (
     <div className={`tk-root pointer-events-auto absolute inset-0 z-40 overflow-hidden text-white tk-${phase}`}>
-      <div className="tk-vignette" />
       <div className="tk-speed" />
       <div className="tk-grid" />
       {found && <div className="tk-flash" key={`fl-${phase}`} />}

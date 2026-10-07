@@ -169,15 +169,16 @@ export function buildSpotRig(scene: THREE.Scene): SpotRig {
     g.add(cm);
     g.lookAt(target);
     scene.add(g);
-    let poolMesh: THREE.Mesh | null = null;
-    if (!moving) {
-      // the pool of light where the cone lands on the canvas
-      poolMesh = new THREE.Mesh(new THREE.CircleGeometry(spread * 1.35, 32), new THREE.MeshBasicMaterial({ map: pool, color: col, transparent: true, opacity: 0.2, blending: THREE.AdditiveBlending, depthWrite: false }));
-      poolMesh.rotation.x = -Math.PI / 2;
-      poolMesh.position.set(target.x, target.y + 0.035, target.z);
-      poolMesh.renderOrder = 1;
-      scene.add(poolMesh);
-    }
+    // EVERY beam lands somewhere: the coloured moving beams carry their own pool of light on the canvas, dragged
+    // where the head points each frame — that is what makes the show read as LIGHT, not just glowing cones in the air
+    const poolMesh = new THREE.Mesh(
+      new THREE.CircleGeometry(spread * 1.35, 32),
+      new THREE.MeshBasicMaterial({ map: pool, color: col, transparent: true, opacity: moving ? 0.16 : 0.34, blending: THREE.AdditiveBlending, depthWrite: false }),
+    );
+    poolMesh.rotation.x = -Math.PI / 2;
+    poolMesh.position.set(target.x, target.y + 0.035, target.z);
+    poolMesh.renderOrder = 1;
+    scene.add(poolMesh);
     const lamp: Lamp = { g, cone, lens, glare: gl, pool: poolMesh, base, col, target: target.clone(), ph, moving };
     lamps.push(lamp);
     return lamp;
@@ -190,15 +191,16 @@ export function buildSpotRig(scene: THREE.Scene): SpotRig {
     const tr = 4.6;
     const target = new THREE.Vector3(Math.cos(a) * tr, 0, Math.sin(a) * tr);
     const warm = i % 2 === 0 ? 0xfff1dc : 0xf4f6ff; // alternating warm / daylight heads, like a real rig
-    mkLamp(pos, target, warm, 34, 5.0, 0.42, false, i * 0.7);
+    mkLamp(pos, target, warm, 34, 5.0, 0.5, false, i * 0.7);
   }
-  // six coloured moving heads on the outer rig: slow sweeps through the haze in the classic rig palette
-  // (blue, red, magenta, cyan, amber, violet) — the colour that makes a stadium light show read as a show
-  const HEAD_COLORS = [0x3f86ff, 0xff3a46, 0xff4dd2, 0x2fe6ff, 0xffb03a, 0x9a5bff];
+  // TEN coloured moving heads on the outer rig: sweeps through the haze in the classic rig palette (blue, red,
+  // magenta, cyan, amber, violet, back round again) — the colour that makes a stadium light show read as a show.
+  // Every beam drags its own pool of colour across the canvas, so the ring ITSELF is part of the show.
+  const HEAD_COLORS = [0x3f86ff, 0xff3a46, 0xff4dd2, 0x2fe6ff, 0xffb03a, 0x9a5bff, 0x3fffa6, 0xff7a3a, 0x5fc8ff, 0xff3a8a];
   for (let i = 0; i < HEAD_COLORS.length; i++) {
     const a = (i / HEAD_COLORS.length) * Math.PI * 2 + Math.PI / 4 + 0.2;
-    const pos = new THREE.Vector3(Math.cos(a) * 40, 33.0, Math.sin(a) * 40);
-    mkLamp(pos, new THREE.Vector3(0, 0, 0), HEAD_COLORS[i], 58, 4.0, 0.25, true, i * 1.3);
+    const pos = new THREE.Vector3(Math.cos(a) * 40, 33.0 + (i % 2) * 2.2, Math.sin(a) * 40);
+    mkLamp(pos, new THREE.Vector3(0, 0, 0), HEAD_COLORS[i], 58, 4.0, 0.3, true, i * 1.3);
   }
 
   // THE HERO FOLLOWSPOTS: two big warm-white followspots on the inner truss, one locked on each fighter, the way the
@@ -240,14 +242,19 @@ export function buildSpotRig(scene: THREE.Scene): SpotRig {
           l.light.intensity = (trackOn[i] ? 54 : 0) + hype * 10 + st * 46;
         }
       } else if (l.moving) {
-        // a slow figure-of-eight sweep round the action, tighter and brighter with the hype
-        const sw = t * 0.28 + l.ph;
-        const r = 7 + Math.sin(t * 0.37 + l.ph) * 4 + hype * 3;
+        // a figure-of-eight sweep round the action — the pool of colour it carries slides across the canvas with it
+        const sw = t * 0.34 + l.ph;
+        const r = 8 + Math.sin(t * 0.37 + l.ph) * 4.5 + hype * 3;
         tmp.set(focus.x * 0.5 + Math.cos(sw) * r, 0, focus.z * 0.5 + Math.sin(sw * 1.3) * r);
         l.g.lookAt(tmp);
-        l.cone.uniforms.intensity.value = l.base * (0.75 + hype * 0.7 + st * 1.4) + (Math.sin(t * 2.3 + l.ph) * 0.5 + 0.5) * 0.04;
+        if (l.pool) {
+          l.pool.position.set(tmp.x, tmp.y + 0.04, tmp.z);
+          (l.pool.material as THREE.MeshBasicMaterial).opacity = 0.10 + hype * 0.10 + st * 0.12;
+        }
+        l.cone.uniforms.intensity.value = l.base * (0.85 + hype * 0.8 + st * 1.4) + (Math.sin(t * 2.3 + l.ph) * 0.5 + 0.5) * 0.05;
         // on an impact the colour heads flick to white for a beat
         l.cone.uniforms.color.value.copy(l.col).lerp(WHITE, st * 0.8);
+        (l.pool!.material as THREE.MeshBasicMaterial).color.copy(l.col).lerp(WHITE, st * 0.7);
       } else {
         // the followspots hold their marks; only a faint breath of the haze moves
         l.cone.uniforms.intensity.value = l.base * (0.92 + Math.sin(t * 0.9 + l.ph) * 0.06 + hype * 0.18 + st * 0.7);

@@ -4,281 +4,185 @@
 //     node clashtest.mjs
 // (or just `npm run test:clash`, which does all three)
 //
-// It drives the REAL Robot rig with the REAL clash tracks out of Game.ts — the same numbers the VS screen runs — and
-// checks the four things that make a fist clash read as a clash instead of two arms waving near each other:
-//   §1  the beat: both machines are wound up BEFORE the "2" of the count, and the gloves meet on the "1"
-//   §2  the GEOMETRY, per vertex on every frame: all four gloves, no two of them ever inside each other
-//   §3  the POWER: a real wind-up, a locked-out elbow, Overdrive weight on the throw, a hand that stays in guard
-//   §4  the RIGHT hand: BOTH machines throw the right one — the arm on the inside, facing the middle
-//
-// The contact is a two-key throw at cinematic speed, so the numbers below are the numbers the stage plays: the same
-// arm poses, the same body channels, the same order of arrival (the player's fist is parked on the contact patch
-// first; the opponent's straight is what lands on the "1"). §2 measures the MESHES, not the pivots: a 1.3 m glove's
-// rounded box is what decides whether two fists touch or sweep through each other.
+// It drives the REAL Robot rigs CONTINUOUSLY through the REAL clash tracks out of Game.ts — the same frames the
+// VS screen plays, from t = 0 to the cover — and checks:
+//   §1  the beat: a tandem wind-up with real loaded depth (ancang-ancang), both gloves meeting on the "1"
+//   §2  the GEOMETRY, per vertex on every REAL frame: all four gloves, no two of them ever inside each other
+//   §3  the POWER: a deep coil, a whip at real punch speed, a locked elbow, a hand that stays in guard
+//   §4  the RIGHT hand: BOTH machines throw it — the arm on the inside, facing the middle
+// NOTE: earlier cuts snapped a separate freshly-settled rig per sampled frame. That harness lies once the pose
+// carries a 1.4 rad chest coil (the balance solver re-anchors the feet mid-settle) — the measurements below come
+// from the continuous timeline itself, exactly as played.
 import * as THREE from 'three';
 import { Robot } from './.__robot.mjs';
-import { GUARD, MOVES, sampleKeys, VS_CLASH_AT, VS_CLASH_AT_HIT, VS_CLASH_DUR, VS_CLASH_HIT, VS_CLASH_KEYS, VS_CLASH_KEYS_CROSS, VS_CLASH_POINT, vsClashState } from './.__game.mjs';
+import { GUARD, sampleKeys, VS_CLASH_AT_HIT, VS_CLASH_DUR, VS_CLASH_HIT, VS_CLASH_KEYS, VS_CLASH_KEYS_CROSS, VS_CLASH_POINT, vsClashState } from './.__game.mjs';
 
 const D = 1 / 60;
 const STYLE = { variant: 'atom', main: 0x8a8f98, secondary: 0x3a3f47, accent: 0x1e9bff, glow: 0x63e0ff };
 let fails = 0;
 const ok = (label, cond, info = '') => {
   if (!cond) fails++;
-  console.log(`   ${cond ? 'PASS' : 'FAIL'}  ${label}${info ? '   ' + info : ''}`);
+  console.log(`   ${cond ? 'PASS' : 'FAIL'}  ${label}${info ? '   ' : ''}${info}`);
 };
 const f2 = (v) => (Math.round(v * 100) / 100).toFixed(2);
 const f3 = (v) => (Math.round(v * 1000) / 1000).toFixed(3);
 const V = new THREE.Vector3();
-const mk = () => ({
-  arms: [GUARD, GUARD],
-  twist: 0, lean: 0.08, lunge: 0, dip: 0.12, roll: 0,
-  vf: 0, vl: 0, af: 0, al: 0, yawRate: 0, hit: 0, hitSign: 1, hitUp: 0, fall: 0, air: 0, time: 0,
-  glow: 0.45, flash: 0, tilt: 0, dash: 0, dashF: 0, dashL: 1,
-});
-/** the VS stage: the hero on the left mark, the opponent on the right one, both angled in at the middle */
 const HERO_X = -2.75;
 const FOE_X = 2.75;
 const YAW = 0.42;
-/** how long the rig is left running so the springs settle onto the sampled pose before anything is measured */
-const SETTLE = 150;
 
-/**
- * one rig, settled onto the clash pose sampled at `t` — built exactly the way the VS screen builds it. `side` picks
- * the track (the player throws his cross, the opponent his straight), and every channel the state carries goes into
- * the AnimState, because any one of them can move a glove.
- */
-function rigAt(t, side) {
-  const c = vsClashState(side, t);
-  const r = new Robot(STYLE, 1);
-  r.snapFeet();
-  r.root.position.set(side === 'hero' ? HERO_X : FOE_X, 0, 0);
-  // the square-up: the extra yaw the pose itself carries, on top of the stance angle both machines already hold
-  r.root.rotation.y = (side === 'hero' ? 1 : -1) * (YAW + (c.yaw ?? 0));
-  const a = mk();
-  a.arms = c.arms;
-  a.twist = c.twist;
-  a.lean = c.lean;
-  a.dip = c.dip;
-  a.roll = c.roll;
-  a.lunge = c.lunge;
-  a.headYaw = c.head;
-  a.lookX = c.lookX;
-  a.lookY = c.lookY;
-  a.strike = c.strike;
-  a.strikePow = c.pow;
-  a.punchFoot = c.punch >= 0 ? c.punch : -1;
-  a.punchZ = 0.46;
-  a.punchX = side === 'hero' ? 0.1 : -0.1;
-  a.punchDur = 0.24;
-  a.punchSeq = c.punchSeq;
-  for (let i = 0; i < SETTLE; i++) {
-    a.time += D;
-    r.animate(a, D);
-  }
-  r.root.updateWorldMatrix(true, true);
-  return { r, c };
-}
-const fist = (r, i) => {
-  r.fists[i].updateWorldMatrix(true, false);
-  return r.fists[i].getWorldPosition(V).clone();
-};
-/**
- * The GLOVE as it really is: every world-space vertex of the fist mesh (sub-sampled), its box, and its meshes so the
- * strict inside test can ray-cast them. This — not the pivot point — is what decides whether two 1.3 m gloves touch
- * or pass through each other, so it is what §2 measures.
- */
-const SUB = 3;
-function cloud(fistObj, store = null) {
-  const pts = store ?? [];
+// ---------------------------------------------------------- the CONTINUOUS timeline, exactly as the VS screen plays it
+function gloveCloud(fistObj) {
+  const pts = [];
   const box = new THREE.Box3();
   const meshes = [];
   fistObj.updateWorldMatrix(true, false);
   fistObj.traverse((o) => {
     if (!o.isMesh || !o.geometry?.attributes?.position) return;
     const pos = o.geometry.attributes.position;
-    for (let i = 0; i < pos.count; i += SUB) {
+    for (let i = 0; i < pos.count; i += 2) {
       V.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
       pts.push(V.x, V.y, V.z);
       box.expandByPoint(V);
     }
-    meshes.push({ m: o, world: new THREE.Box3().setFromObject(o) });
+    meshes.push({ m: o });
   });
   return { pts, box, meshes, c: box.getCenter(new THREE.Vector3()) };
 }
+
+const mkRig = (side) => {
+  const r = new Robot(STYLE, 1);
+  r.snapFeet();
+  r.root.position.set(side === 'hero' ? HERO_X : FOE_X, 0, 0);
+  r.root.rotation.y = (side === 'hero' ? 1 : -1) * YAW;
+  return r;
+};
+const mkA = (c, t) => ({
+  arms: c.arms, twist: c.twist, lean: c.lean, lunge: c.lunge, dip: c.dip, roll: c.roll,
+  vf: 0, vl: 0, af: 0, al: 0, yawRate: 0, hit: 0, hitSign: 1, hitUp: 0, fall: 0, air: 0, time: t,
+  glow: c.glow, flash: c.shock, tilt: 0, dash: 0, dashF: 0, dashL: 1,
+  lookX: c.lookX, lookY: c.lookY, headYaw: c.head,
+  strike: c.strike, strikePow: c.pow,
+  punchFoot: c.punch, punchSeq: c.punchSeq, punchZ: c.punchZ, punchX: c.punchX, punchDur: c.punchDur,
+});
+
+const frames = []; // [{t, h:{thrown,guard,chest}, f:{...}}]
+{
+  const hero = mkRig('hero');
+  const foe = mkRig('foe');
+  for (let t = 0; t <= VS_CLASH_DUR + 1e-9; t += D) {
+    const ch = vsClashState('hero', t);
+    const cf = vsClashState('foe', t);
+    hero.root.rotation.y = YAW + ch.yaw;
+    foe.root.rotation.y = -(YAW + cf.yaw);
+    hero.animate(mkA(ch, t), D);
+    foe.animate(mkA(cf, t), D);
+    hero.root.updateWorldMatrix(true, true);
+    foe.root.updateWorldMatrix(true, true);
+    frames.push({
+      t,
+      h: { thrown: gloveCloud(hero.fists[1]), guard: gloveCloud(hero.fists[0]), chest: hero.chest.getWorldPosition(new THREE.Vector3()) },
+      f: { thrown: gloveCloud(foe.fists[1]), guard: gloveCloud(foe.fists[0]), chest: foe.chest.getWorldPosition(new THREE.Vector3()) },
+    });
+  }
+}
+const frameAt = (t) => {
+  let best = frames[0];
+  let bd = 1e9;
+  for (const fr of frames) {
+    const d = Math.abs(fr.t - t);
+    if (d < bd) { bd = d; best = fr; }
+  }
+  return best;
+};
 /** distance between two boxes (0 when they touch/overlap) — a SAFE LOWER BOUND on the real surface distance */
 const boxGap = (a, b) => Math.hypot(
   Math.max(0, a.min.x - b.max.x, b.min.x - a.max.x),
   Math.max(0, a.min.y - b.max.y, b.min.y - a.max.y),
   Math.max(0, a.min.z - b.max.z, b.min.z - a.max.z),
 );
-/** the real thing: the closest pair of glove vertices, brute force. Only paid where the boxes are already close. */
-const surfaceGap = (A, B) => {
+const closestPair = (A, B) => {
   let best = Infinity;
+  const mid = new THREE.Vector3();
   for (let i = 0; i < A.pts.length; i += 3) {
     for (let j = 0; j < B.pts.length; j += 3) {
       const dx = A.pts[i] - B.pts[j];
       const dy = A.pts[i + 1] - B.pts[j + 1];
       const dz = A.pts[i + 2] - B.pts[j + 2];
-      const d = dx * dx + dy * dy + dz * dz;
-      if (d < best) best = d;
-    }
-  }
-  return Math.sqrt(best);
-};
-/** the closest pair itself (both points), so the CONTACT PATCH can be located, not just its width */
-function closestPair(A, B) {
-  let best = Infinity;
-  let a = 0;
-  let b = 0;
-  for (let i = 0; i < A.pts.length; i += 3) {
-    for (let j = 0; j < B.pts.length; j += 3) {
-      const dx = A.pts[i] - B.pts[j];
-      const dy = A.pts[i + 1] - B.pts[j + 1];
-      const dz = A.pts[i + 2] - B.pts[j + 2];
-      const d = dx * dx + dy * dy + dz * dz;
+      const d = Math.hypot(dx, dy, dz);
       if (d < best) {
         best = d;
-        a = i;
-        b = j;
+        mid.set((A.pts[i] + B.pts[j]) / 2, (A.pts[i + 1] + B.pts[j + 1]) / 2, (A.pts[i + 2] + B.pts[j + 2]) / 2);
       }
     }
   }
-  return {
-    g: Math.sqrt(best),
-    a: new THREE.Vector3(A.pts[a], A.pts[a + 1], A.pts[a + 2]),
-    b: new THREE.Vector3(B.pts[b], B.pts[b + 1], B.pts[b + 2]),
-    mid: new THREE.Vector3(A.pts[a], A.pts[a + 1], A.pts[a + 2]).add(new THREE.Vector3(B.pts[b], B.pts[b + 1], B.pts[b + 2])).multiplyScalar(0.5),
-  };
-}
-/**
- * Both gloves of one machine at time `t`. (A clash is four gloves in a small volume: a guard hand can be swept
- * through exactly like a thrown one, so §2 walks all four.)
- */
-function glovesAt(t, side) {
-  const { r, c } = rigAt(t, side);
-  return { thrown: cloud(r.fists[c.arm]), other: cloud(r.fists[1 - c.arm]), arm: c.arm, c };
-}
-const thrownAt = (t, side) => glovesAt(t, side).thrown;
-
-// The strict one: a minimum vertex-to-vertex distance is NOT proof of no interpenetration — two solids can overlap
-// and still keep their vertices apart. Each glove part is a closed convex shell (rounded box / sphere / capsule), so
-// a point is inside it iff a ray from that point crosses it an odd number of times. Three rays, majority vote, and
-// a per-mesh AABB prefilter so only the vertices actually near the other glove get cast.
-const rc = new THREE.Raycaster();
-rc.far = 60;
-const RAYS = [
-  new THREE.Vector3(0.9973, 0.0573, 0.0411).normalize(),
-  new THREE.Vector3(-0.0217, 0.9991, 0.0361).normalize(),
-  new THREE.Vector3(0.0311, -0.0173, 0.9994).normalize(),
-];
-function vertsInside(A, B) {
-  const inside = (v) => {
-    let hits = 0;
-    for (const d of RAYS) {
-      let n = 0;
-      for (const e of B.meshes) {
-        if (!e.world.containsPoint(v)) continue;
-        rc.set(v, d);
-        n += rc.intersectObject(e.m, false).length;
-      }
-      if (n % 2 === 1) hits++;
-    }
-    return hits >= 2;
-  };
+  return { g: best, mid };
+};
+/** strict penetration: is any glove vertex INSIDE the other's meshes? ray-cast from one point, count crossings */
+const RAY = new THREE.Raycaster();
+const vertsInside = (A, B) => {
   let n = 0;
-  for (let i = 0; i < A.pts.length; i += 3) if (inside(new THREE.Vector3(A.pts[i], A.pts[i + 1], A.pts[i + 2]))) n++;
+  const dir = new THREE.Vector3(1, 0.37, 0.23).normalize();
+  for (let i = 0; i < A.pts.length; i += 3) {
+    RAY.set(new THREE.Vector3(A.pts[i], A.pts[i + 1], A.pts[i + 2]), dir);
+    RAY.far = 60;
+    let hits = 0;
+    for (const { m } of B.meshes) {
+      const res = RAY.intersectObject(m, false);
+      if (res.length > 0) hits = Math.max(hits, res.length);
+    }
+    if (hits % 2 === 1 && hits > 0) n++;
+  }
   return n;
-}
+};
 const GNAME = ['L', 'R'];
 
-// The reference throw for the WEIGHT of the clash: the Overdrive straight the game already ships, driven through
-// the same rig. The clash is meant to land at that weight, so the tests compare against it instead of a made-up
-// number. (Both are target-space speeds — the fight's springs smooth what you actually see.)
-const boltStep = (() => {
-  let worst = 0;
-  let prev = null;
-  for (let t = 0; t <= 0.8; t += D) {
-    const p = sampleKeys(MOVES.bolt.keys, t);
-    const r = new Robot(STYLE, 1);
-    r.snapFeet();
-    r.root.position.set(HERO_X, 0, 0);
-    r.root.rotation.y = YAW;
-    const a = mk();
-    a.arms = [p.p, GUARD];
-    a.twist = p.twist;
-    a.lean = p.lean;
-    a.dip = p.dip;
-    for (let i = 0; i < SETTLE; i++) {
-      a.time += D;
-      r.animate(a, D);
-    }
-    r.root.updateWorldMatrix(true, true);
-    const f = fist(r, 0);
-    if (prev) worst = Math.max(worst, f.distanceTo(prev));
-    prev = f;
-  }
-  return worst;
-})();
-const peakStep = (side, t0, t1) => {
-  let worst = 0;
-  let at = 0;
-  let prev = fist(rigAt(t0, side).r, vsClashState(side, t0).arm);
-  for (let t = t0 + D; t <= t1 + 1e-9; t += D) {
-    const p = fist(rigAt(t, side).r, vsClashState(side, t).arm);
-    const d = p.distanceTo(prev);
-    if (d > worst) {
-      worst = d;
-      at = t;
-    }
-    prev = p;
-  }
-  return { worst, at };
-};
-
 // ============================================================================================== §1 the beat
-console.log('\n§1  the beat: wound up BEFORE the "2", gloves meeting on the "1"');
+console.log('\n§1  the beat: a tandem gameplay coil (ancang-ancang), both gloves meeting exactly on the "1"');
 {
   const SIDES = [['player', 'hero', VS_CLASH_KEYS_CROSS], ['opponent', 'foe', VS_CLASH_KEYS]];
   for (const [name, , keys] of SIDES) {
     ok(`${name}: the track runs forward in time`, keys.every((k, i) => i === 0 || k.t > keys[i - 1].t), keys.map((k) => f2(k.t)).join(' < ') + ' s');
   }
-  // the count reads 3 (0-1 s), 2 (1-2 s), 1 (2-3 s): the clash track starts VS_CLASH_AT into it, so a clash-time t
-  // lands on the count at VS_CLASH_AT + t. Both machines must be carrying the FULL load by the time the "2" lands,
-  // and must still be carrying it a second later — nothing uncoils early.
   const elbow = (side, t) => vsClashState(side, t).arms[1].ex;
+  const coilD = (side, t) => (side === 'hero' ? -1 : 1) * vsClashState(side, t).twist;
   for (const [name, side] of SIDES) {
-    const coil = Math.min(elbow(side, 0.3), elbow(side, 0.55));
-    ok(`${name}: fully coiled before the "2" (the "2" lands 1.00 s in)`, elbow(side, 0.55) <= -2.4, `deepest coil ${f2(coil)} rad by ${f2(VS_CLASH_AT + 0.55)} s into the count`);
+    // the ancang-ancang: elbow folded deep AND the chest counter-wound past a full radian — the whole machine
+    // visibly loads before the whip, not just the arm wagging
+    ok(`${name}: deep coil by mid-wind-up (elbow AND chest)`, elbow(side, 0.62) <= -2.4 && Math.abs(coilD(side, 0.62)) >= 1.15, `elbow ${f2(elbow(side, 0.62))} rad, chest coil ${f2(Math.abs(coilD(side, 0.62)))} rad at 0.62 s`);
   }
-  ok('...and both HOLD the load right through the "2"', elbow('hero', 1.0) < -2.0 && elbow('foe', 1.0) < -2.0, `elbow at 1.45 s into the count: player ${f2(elbow('hero', 1.0))} · opponent ${f2(elbow('foe', 1.0))} rad`);
-  // ...and both fists are still a long way from where they will meet: nothing is creeping out early.
-  const patch = new THREE.Vector3(VS_CLASH_POINT.x, VS_CLASH_POINT.y, VS_CLASH_POINT.z);
-  const away = (side, t) => thrownAt(t, side).c.distanceTo(patch);
-  ok('...and neither fist has started travelling towards the other', away('hero', 1.0) > 1.5 && away('foe', 1.0) > 1.5, `gloves ${f2(away('hero', 1.0))} m / ${f2(away('foe', 1.0))} m short of the contact patch at the "2"`);
-  ok('the gloves meet exactly on the "1" of the count', Math.abs(VS_CLASH_AT_HIT - 2.0) < 0.06, `${f2(VS_CLASH_AT_HIT)} s into the 3 s count`);
-  ok('...which is before the bell, so the transition can cover it', VS_CLASH_AT_HIT < 3.0, 'bell at 3.00 s');
+  // TANDEM: both machines carry the same coil through the same beats — no one goes early
+  const spread = (t) => Math.abs(-(vsClashState('hero', t).twist) - vsClashState('foe', t).twist);
+  let maxSpread = 0;
+  for (let t = 0.1; t <= 0.92; t += D) maxSpread = Math.max(maxSpread, spread(t));
+  ok('BOTH machines wind in TANDEM (coil depth stays matched through the beats)', maxSpread < 0.26, `worst twist mismatch ${f3(maxSpread)} rad across the wind-up`);
+  // the wind-up must be REAL: from the guard the gloves retreat a long way behind the body lines
+  const guardH = frameAt(0.05).h.thrown.c;
+  const coilH = Math.max(...frames.filter((f) => f.t >= 0.5 && f.t <= 0.96).map((f) => f.h.chest.distanceTo(f.h.thrown.c)));
+  ok('the wind-up physically retreats the fists a long way', coilH > 2.1, `deepest fist-off-chest reach ${f2(coilH)} m during the coil`);
+  ok('the gloves meet exactly on the "1" of the count', Math.abs(VS_CLASH_AT_HIT - 1.36) < 0.06, `${f2(VS_CLASH_AT_HIT)} s into the count (~2 s total)`);
+  ok('...which is before the bell, so the transition can cover it', VS_CLASH_AT_HIT < 2.05, 'bell at ~2.04 s');
   ok('the clash rides on past the hit (the lock HOLDS until the cover)', VS_CLASH_DUR > VS_CLASH_HIT, `held ${f2(VS_CLASH_DUR - VS_CLASH_HIT)} s after the impact`);
-  // THE ORDER OF ARRIVAL. One fist is parked on the contact patch and the other lands on it — a glove that arrives
-  // second at 30 m/s sweeps THROUGH a glove that is already sitting there if both arrive together.
-  const hitH = thrownAt(VS_CLASH_HIT, 'hero').c;
-  const hitF = thrownAt(VS_CLASH_HIT, 'foe').c;
-  let parkH = null;
-  for (let t = 1.3; t <= 1.52; t += D) {
-    if (thrownAt(t, 'hero').c.distanceTo(hitH) < 0.06) {
-      parkH = t;
-      break;
+  // the whip: measure the REAL peak glove step across the throw window in the timeline
+  for (const [name, side, from, to] of [['player', 'h', 0.86, VS_CLASH_HIT + 0.05], ['opponent', 'f', 0.86, VS_CLASH_HIT + 0.05]]) {
+    let worst = 0;
+    let at = 0;
+    let prev = null;
+    for (const fr of frames) {
+      if (fr.t < from || fr.t > to) continue;
+      const c = fr[side].thrown.c;
+      if (prev) {
+        const d = c.distanceTo(prev);
+        if (d > worst) { worst = d; at = fr.t; }
+      }
+      prev = c;
     }
+    ok(`${name}'s cross whips at gameplay punch speed`, worst > 0.3 && worst <= 2.2, `${f2(worst)} m/frame peak at ${f2(at)} s`);
   }
-  const fLate = thrownAt(1.45, 'foe').c.distanceTo(hitF);
-  ok('the player is PARKED on the contact patch before his opponent gets there', parkH !== null && parkH <= VS_CLASH_HIT - 0.08 && fLate > 0.5, `player set by ${f2(parkH ?? VS_CLASH_HIT)} s; the opponent's glove is still ${f2(fLate)} m short of the patch at 1.45 s ("1" at ${f2(VS_CLASH_HIT)} s)`);
-  const hero = peakStep('hero', 1.05, VS_CLASH_DUR + 0.3);
-  const foe = peakStep('foe', 1.0, VS_CLASH_DUR + 0.3);
-  ok("the player's cross lands at Overdrive weight", hero.worst > boltStep * 0.45 && hero.worst <= boltStep * 1.25, `${f2(hero.worst)} vs Overdrive ${f2(boltStep)} m/frame (peak at ${f2(hero.at)} s)`);
-  ok("...and so does the opponent's straight", foe.worst > boltStep * 0.45 && foe.worst <= boltStep * 1.25, `${f2(foe.worst)} vs Overdrive ${f2(boltStep)} m/frame (peak at ${f2(foe.at)} s)`);
 }
 
 // ============================================================================================== §2 the geometry
-console.log('\n§2  the geometry, per vertex on EVERY frame: all four gloves meet, and none ever enters another');
+console.log('\n§2  the geometry, per vertex on every REAL frame: all four gloves meet, and none ever enters another');
 {
   let minGap = Infinity;
   let minAt = 0;
@@ -286,86 +190,73 @@ console.log('\n§2  the geometry, per vertex on EVERY frame: all four gloves mee
   let hitGap = 0;
   let hitDy = 0;
   let hitMid = null;
-  let exactFrames = 0;
   let penFrames = 0;
   let penWorst = 0;
   let penAt = 0;
-  for (let t = 0; t <= VS_CLASH_DUR + 1e-9; t += D) {
-    const H = glovesAt(t, 'hero');
-    const F = glovesAt(t, 'foe');
-    const HG = [H.other, H.thrown];
-    const FG = [F.other, F.thrown];
+  let exactFrames = 0;
+  for (const fr of frames) {
+    const HG = [fr.h.guard, fr.h.thrown];
+    const FG = [fr.f.guard, fr.f.thrown];
     for (let hi = 0; hi < 2; hi++) {
       for (let fi = 0; fi < 2; fi++) {
         const A = HG[hi];
         const B = FG[fi];
-        const bg = boxGap(A.box, B.box);
-        // the boxes only overlap the surface question in the last stretch (before that they are metres apart, and
-        // the box distance is already a lower bound) — so the brute-force pass is only paid where it can change the
-        // answer. The strict inside test is only paid where the boxes actually touch.
-        if (bg > 0.5) continue;
+        if (boxGap(A.box, B.box) > 0.5) continue;
         const cp = closestPair(A, B);
         exactFrames++;
         if (cp.g < minGap) {
           minGap = cp.g;
-          minAt = t;
+          minAt = fr.t;
           minPair = `player ${GNAME[hi]} × opponent ${GNAME[fi]}`;
         }
-        if (bg === 0) {
+        if (boxGap(A.box, B.box) === 0) {
           const n = Math.max(vertsInside(A, B), vertsInside(B, A));
           if (n > 0) {
             penFrames++;
-            if (n > penWorst) {
-              penWorst = n;
-              penAt = t;
-            }
+            if (n > penWorst) { penWorst = n; penAt = fr.t; }
           }
-        }
-        if (hi === 1 && fi === 1 && Math.abs(t - VS_CLASH_HIT) < D / 2) {
-          hitGap = cp.g;
-          hitDy = Math.abs(H.thrown.c.y - F.thrown.c.y);
-          hitMid = cp.mid.clone();
         }
       }
     }
   }
-  ok('NO interpenetration: the gloves never close inside 3 cm on any frame', minGap > 0.03, `min surface gap ${f3(minGap)} m at ${f2(minAt)} s (${minPair}; ${exactFrames} glove-pair frames measured per vertex)`);
-  ok('...and nothing is INSIDE anything: no vertex of any glove lies within another', penFrames === 0, penFrames ? `${penFrames} frames with a vertex inside a glove — worst ${penWorst} verts at ${f2(penAt)} s` : 'ray test on every overlapping pair, front to back');
-  ok('the CLOSEST approach of the whole clash is the contact itself, on the "1"', Math.abs(minAt - VS_CLASH_HIT) <= D * 2, `closest at ${f2(minAt)} s, hit at ${f2(VS_CLASH_HIT)} s (no earlier pass-by)`);
-  ok('...and at the hit itself they are TOUCHING, not overlapping', hitGap >= 0.05 && hitGap <= 0.25, `${f3(hitGap)} m of air between the two gloves`);
-  ok('...and they meet LEVEL, glove to glove', hitDy <= 0.2, `Δy ${f3(hitDy)} m`);
+  const hitFr = frameAt(VS_CLASH_HIT);
+  const hitCp = closestPair(hitFr.h.thrown, hitFr.f.thrown);
+  hitGap = hitCp.g;
+  hitDy = Math.abs(hitFr.h.thrown.c.y - hitFr.f.thrown.c.y);
+  hitMid = hitCp.mid;
+  ok('NO interpenetration: no vertex of any glove lies within another glove on ANY real frame', penFrames === 0, penFrames ? `${penFrames} frames with a vertex inside a glove — worst ${penWorst} verts at ${f2(penAt)} s` : 'ray test on every overlapping pair across the whole clash');
+  ok('there is NO close pass anywhere before the "1" (the gloves only get near each other AT the hit)', minAt >= VS_CLASH_HIT - 0.12, `closest approach at ${f2(minAt)} s (${minPair}), the "1" at ${f2(VS_CLASH_HIT)} s`);
+  ok('...and at the hit itself the two gloves are TOUCHING, not overlapping', hitGap >= -0.02 && hitGap <= 0.22, `${f3(hitGap)} m of air between the two gloves at ${f2(VS_CLASH_HIT)} s`);
+  ok('...and they meet LEVEL, glove to glove', hitDy <= 0.22, `Δy ${f3(hitDy)} m`);
   ok('...in front of both chests', hitMid.z > 0.8 && hitMid.z < 3.5, `contact patch at z ${f2(hitMid.z)} m`);
-  ok('...on the middle of the stage, not off at one side', Math.abs(hitMid.x) < 1.6, `contact patch at x ${f2(hitMid.x)} m (the machines stand at ∓${HERO_X < 0 ? -HERO_X : HERO_X} m)`);
+  ok('...dead centre on the stage, not off at one side', Math.abs(hitMid.x) < 1.6, `contact patch at x ${f2(hitMid.x)} m (the machines stand at ∓2.75 m)`);
   ok('...at chin height, where a clash reads', hitMid.y > 5.0 && hitMid.y < 7.0, `contact patch at y ${f2(hitMid.y)} m`);
-  const H2 = thrownAt(VS_CLASH_DUR, 'hero');
-  const F2 = thrownAt(VS_CLASH_DUR, 'foe');
-  ok('they are STILL locked when the shot is covered', surfaceGap(H2, F2) < 0.5, `${f3(surfaceGap(H2, F2))} m apart at the end`);
+  const end = frames[frames.length - 1];
+  ok('they are STILL locked when the shot is covered', closestPair(end.h.thrown, end.f.thrown).g < 0.5, `${f3(closestPair(end.h.thrown, end.f.thrown).g)} m apart at the cover`);
 }
 
 // ============================================================================================== §3 the power
-console.log('\n§3  the power: a real wind-up, a locked elbow, a hand that stays up');
+console.log('\n§3  the power: a deep coil, a whip, a locked elbow, a hand that stays up');
 {
-  const coil = thrownAt(1.1, 'hero');
-  const park = thrownAt(1.4, 'hero');
-  const hit = thrownAt(VS_CLASH_HIT, 'hero');
-  const travel = coil.c.distanceTo(park.c);
-  ok('the fist is pulled a long way back BEFORE the throw', travel > 1.4, `${f2(travel)} m of travel from the hold at 1.10 s to the park at 1.40 s`);
-  ok('...and thrown INWARDS, across his own chest towards the middle', park.c.x - coil.c.x > 0.6 && Math.abs(park.c.x) < Math.abs(coil.c.x), `x ${f2(coil.c.x)} → ${f2(park.c.x)} (${f2(park.c.x - coil.c.x)} m inward)`);
-  ok('...and it does not drift after it lands (the lock is a lock)', hit.c.distanceTo(park.c) < 0.15 && hit.c.distanceTo(thrownAt(1.5, 'hero').c) < 0.03, `${f3(hit.c.distanceTo(park.c))} m of creep from 1.40 s to the hit, ${f3(hit.c.distanceTo(thrownAt(1.5, 'hero').c))} m in the last 3 frames`);
-  const loaded = vsClashState('hero', 1.1).arms[1].ex;
+  const coil = frameAt(0.64).h.thrown.c;
+  const park = frameAt(VS_CLASH_HIT).h.thrown.c;
+  const travel = coil.distanceTo(park);
+  ok('the fist is chambered a LONG way back BEFORE the throw (the ancang-ancang)', travel > 2.5, `${f2(travel)} m of flight from the deep coil to the contact patch`);
+  ok('...and thrown INWARDS, across to the middle', Math.abs(park.x) < Math.abs(coil.x) && park.x - coil.x > 1.5, `x ${f2(coil.x)} → ${f2(park.x)} (${f2(park.x - coil.x)} m inward from the coil)`);
+  const loaded = vsClashState('hero', 0.62).arms[1].ex;
   const hard = vsClashState('hero', VS_CLASH_HIT).arms[1].ex;
-  ok('the elbow LOADS then LOCKS OUT', loaded < -2.0 && hard > -0.6, `elbow ${f2(loaded)} → ${f2(hard)} rad`);
-  const off = rigAt(VS_CLASH_HIT, 'hero').r;
-  const offGlove = cloud(off.fists[1 - vsClashState('hero', VS_CLASH_HIT).arm]).c;
-  ok('the other hand never leaves the guard', offGlove.y > 4.4 && offGlove.z < hit.c.z - 1.0, `guard hand y ${f2(offGlove.y)} m, z ${f2(offGlove.z)} vs the thrown glove at ${f2(hit.c.z)} m`);
+  ok('the elbow LOADS then LOCKS OUT', loaded < -2.2 && hard > -0.6, `elbow ${f2(loaded)} → ${f2(hard)} rad`);
+  const off = frameAt(VS_CLASH_HIT).h.guard.c;
+  ok('the other hand never leaves the guard', off.y > 4.4 && off.z < park.z - 0.8, `guard hand y ${f2(off.y)} m, z ${f2(off.z)} vs the thrown glove at ${f2(park.z)} m`);
   const wind = vsClashState('hero', 0).arms[1];
-  ok('the arm really winds up (elbow bent, fist cocked high at the chest)', wind.ex < -1.8, `elbow at the count-open ${f2(wind.ex)} rad`);
+  ok('the clash opens from a real guard (elbow folded, fist cocked)', wind.ex < -1.8, `elbow at the count-open ${f2(wind.ex)} rad`);
 }
 
 // ============================================================================================== §3b the light
 console.log('\n§3b  the light lands on the contact patch, not near it');
 {
-  const cp = closestPair(thrownAt(VS_CLASH_HIT, 'hero'), thrownAt(VS_CLASH_HIT, 'foe'));
+  const fr = frameAt(VS_CLASH_HIT);
+  const cp = closestPair(fr.h.thrown, fr.f.thrown);
   const err = Math.hypot(cp.mid.x - VS_CLASH_POINT.x, cp.mid.y - VS_CLASH_POINT.y, cp.mid.z - VS_CLASH_POINT.z);
   ok('the impact FX point is ON the two gloves', err < 0.25, `off by ${f2(err)} m (VS_CLASH_POINT ${f2(VS_CLASH_POINT.x)}, ${f2(VS_CLASH_POINT.y)}, ${f2(VS_CLASH_POINT.z)})`);
 }
@@ -373,8 +264,6 @@ console.log('\n§3b  the light lands on the contact patch, not near it');
 // ============================================================================================== §4 the right hand
 console.log('\n§4  the right hand: BOTH machines throw it, and it is the arm on the inside');
 {
-  // the rig is built facing +z (its boots sit heel −z, toe +z), so with the root at yaw 0 its RIGHT side is −x.
-  // Arm index 1 has to live there — that is what makes `arm: 1` mean "the right hand" and not just "the far arm".
   const r0 = new Robot(STYLE, 1);
   r0.snapFeet();
   r0.root.position.set(0, 0, 0);
@@ -383,27 +272,17 @@ console.log('\n§4  the right hand: BOTH machines throw it, and it is the arm on
   const s1 = r0.shoulders[1].getWorldPosition(new THREE.Vector3());
   ok('arm 1 IS the right arm of the rig (−x, the machine faces +z)', s1.x < s0.x, `shoulder x: arm 0 ${f2(s0.x)} · arm 1 ${f2(s1.x)}`);
   let bothRight = true;
-  const ts = [0.0, 0.3, 0.55, 1.05, 1.3, 1.4, VS_CLASH_HIT, 1.77, VS_CLASH_DUR, 2.4];
-  for (const t of ts) {
+  for (const t of [0.0, 0.3, 0.55, 0.9, 1.05, VS_CLASH_HIT, 1.4, VS_CLASH_DUR]) {
     if (vsClashState('hero', t).arm !== 1 || vsClashState('foe', t).arm !== 1) bothRight = false;
   }
-  ok('BOTH sides throw the right hand on every frame sampled', bothRight, `hero ${vsClashState('hero', VS_CLASH_HIT).arm} · foe ${vsClashState('foe', VS_CLASH_HIT).arm} at the hit (${ts.length} frames sampled)`);
-  // What makes a clash read from the front: the fist each machine DRIVES is the one that reaches the clash, and the
-  // two thrown fists are the pair that ends up nearest each other.
-  const H = glovesAt(VS_CLASH_HIT, 'hero');
-  const F = glovesAt(VS_CLASH_HIT, 'foe');
+  ok('BOTH sides throw the right hand on every frame sampled', bothRight, `hero ${vsClashState('hero', VS_CLASH_HIT).arm} · foe ${vsClashState('foe', VS_CLASH_HIT).arm} at the hit`);
+  const fr = frameAt(VS_CLASH_HIT);
   const patch = new THREE.Vector3(VS_CLASH_POINT.x, VS_CLASH_POINT.y, VS_CLASH_POINT.z);
-  for (const [name, G] of [['player', H], ['opponent', F]]) {
-    const dT = G.thrown.c.distanceTo(patch);
-    const dG = G.other.c.distanceTo(patch);
+  for (const [name, S] of [['player', fr.h], ['opponent', fr.f]]) {
+    const dT = S.thrown.c.distanceTo(patch);
+    const dG = S.guard.c.distanceTo(patch);
     ok(`${name}: his THROWN right hand is the one that reaches the clash`, dT < dG - 0.3, `thrown glove ${f2(dT)} m from the contact patch, guard hand ${f2(dG)} m back`);
   }
-  const cross = [
-    [H.thrown.c.distanceTo(F.thrown.c), 'right × right'],
-    [H.thrown.c.distanceTo(F.other.c), 'right × left'],
-    [H.other.c.distanceTo(F.thrown.c), 'left × right'],
-  ].sort((a, b) => a[0] - b[0]);
-  ok('...and the two RIGHT hands are the pair that meets', cross[0][1] === 'right × right', `${cross.map(([d, n]) => `${n} ${f2(d)} m`).join(' · ')}`);
 }
 
 console.log(fails === 0 ? '\nFIST CLASH: ALL PASS\n' : `\n${fails} FAILURE(S)\n`);

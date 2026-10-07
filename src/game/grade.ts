@@ -8,8 +8,8 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
  * It is what turns a flat real-time render into a broadcast picture: a filmic contrast curve that keeps the
  * highlights rolling off instead of clipping, a proper VIBRANCE stage (the saturation boost works hardest on the
  * muted colours and eases off on the ones that are already rich, so reds and blues get deep instead of neon),
- * highlight desaturation so blown-out lamps never turn into flat patches of colour, a warm/cool split-tone, a
- * soft lens vignette, the faintest film grain — and, because MSAA is expensive on a half-float HDR target, a
+ * highlight desaturation so blown-out lamps never turn into flat patches of colour, a warm/cool split-tone,
+ * NO darkening vignette (the picture holds its colour into the corners), the faintest film grain — and, because MSAA is expensive on a half-float HDR target, a
  * compact FXAA at the very top of the chain (the cheapest anti-aliasing that still kills the stair-steps on the
  * truss, the ropes and the neon edges).
  *
@@ -21,7 +21,7 @@ export const GradeShader = {
     tDiffuse: { value: null as THREE.Texture | null },
     time: { value: 0 },
     res: { value: new THREE.Vector2(1920, 1080) },
-    vignette: { value: 0.46 },
+    vignette: { value: 0.0 }, // no black vignette — the frame keeps its colour corner to corner (design request)
     sat: { value: 1.26 },
     grain: { value: 0.012 },
     contrast: { value: 0.06 },

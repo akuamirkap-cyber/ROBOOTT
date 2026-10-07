@@ -319,8 +319,8 @@ export function buildArena(scene: THREE.Scene): Arena {
   scene.fog = new THREE.FogExp2(0x060a16, 0.0056);
 
   // ---------- Balanced Stadium Broadcast & Championship Ring Lighting (Zero extra light overhead) ----------
-  scene.add(new THREE.AmbientLight(0x9fb4e4, 0.18)); // a hair above the old 0.16: the dark side of a Titan is not muddy, but it is still DARK
-  scene.add(new THREE.HemisphereLight(0x8faeee, 0x1d1520, 0.37));
+  scene.add(new THREE.AmbientLight(0x9fb4e4, 0.21)); // lifted with the rest of the rig: colour everywhere, not mud
+  scene.add(new THREE.HemisphereLight(0x8faeee, 0x241a2c, 0.46));
   const key = new THREE.DirectionalLight(0xfff1dc, 2.45);
   key.position.set(12, 40, 18);
   key.castShadow = true;
@@ -348,21 +348,21 @@ export function buildArena(scene: THREE.Scene): Arena {
   // THE RING KEY: one big warm followspot straight down onto the canvas — the ring blazes, the hall falls off
   // into the dark, the way a title fight is lit for television. Brighter, wider and with a hotter falloff than
   // before, so the canvas is a pool of real light and every scuff on it reads.
-  const ringKey = new THREE.SpotLight(0xfff3e2, 64, 92, 0.68, 0.5, 0.94);
+  const ringKey = new THREE.SpotLight(0xfff3e2, 76, 92, 0.68, 0.5, 0.94);
   ringKey.position.set(5, 33, 7);
   ringKey.target.position.set(0, 0, 0);
   scene.add(ringKey, ringKey.target);
   // ...and a second, cool-white wash from the opposite corner: it lifts the ring apron and gives every fighter
   // a crisp edge on BOTH shoulders, which is what makes a shot read as lit rather than merely bright
-  const ringFill = new THREE.SpotLight(0xdceaff, 22, 86, 0.86, 0.62, 1.0);
+  const ringFill = new THREE.SpotLight(0xdceaff, 30, 86, 0.86, 0.62, 1.0);
   ringFill.position.set(-11, 30, -13);
   ringFill.target.position.set(0, 0, 0);
   scene.add(ringFill, ringFill.target);
-  // the coloured corner rims are cinematic rims now — a warm crimson and a cool steel-blue edge light on the
-  // fighters' shoulders — and the white kicker from the side cuts them out of the dark
-  const rimRed = mkRim(0xff4a3c, -22, -28, 4.5);
-  const rimBlue = mkRim(0x4a92ff, 22, 28, 4.5);
-  const rimSide = mkRim(0xd8e4ff, 30, -12, 2.4); // a clean white-blue side kicker instead of the purple wash
+  // the coloured corner rims are the show now: crimson and steel-blue edge light hard on the fighters' shoulders,
+  // a white kicker from the side cutting them out of the dark — saturated enough that the colour READS
+  const rimRed = mkRim(0xff4a3c, -22, -28, 6.2);
+  const rimBlue = mkRim(0x4a92ff, 22, 28, 6.2);
+  const rimSide = mkRim(0xd8e4ff, 30, -12, 3.4);
 
   // ---------- floor ----------
   const floor = new THREE.Mesh(new THREE.CircleGeometry(150, 48), new THREE.MeshStandardMaterial({ color: 0x0b0e18, roughness: 0.28, metalness: 0.58 }));

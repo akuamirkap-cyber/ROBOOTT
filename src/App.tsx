@@ -215,7 +215,6 @@ export default function App() {
   return (
     <div className={`relative h-full w-full overflow-hidden bg-black ${dive ? 'app-dive' : ''}`}>
       <div ref={mount} className="absolute inset-0" />
-      {inMatch && <div className="vignette" />}
 
       {hud && inMatch && <Hud h={hud} touch={touch} />}
       {inMatch && touch && phase === 'fight' && <TouchControls game={game} />}

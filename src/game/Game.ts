@@ -7,7 +7,6 @@ import { MeterPass, makeGradePass } from './grade';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { Robot, type Pose, type RobotStyle } from './robot';
 import { ARMOR_SKINS, GLOVE_SKINS, HELMET_SKINS } from './build';
-import type { AnimState } from './robot';
 import { FREESTYLE, fallStages, freestyleByKey, freestylePose, getupFoot, riseArms } from './poses';
 import { buildArena, type Arena } from './arena';
 import { HANGAR_POS, buildHangar, type Hangar } from './hangar';
@@ -344,7 +343,7 @@ export interface HudState {
 type MoveId = 'jab' | 'cross' | 'hook' | 'upper' | 'slam' | 'bolt' | 'windmill' | 'skyhook' | 'grab' | 'counter';
 // overdrive moves — the four R variants: the straight (bolt), the spinning smash (windmill), the slam and the launcher
 const isOD = (id: MoveId) => id === 'slam' || id === 'bolt' || id === 'windmill' || id === 'skyhook';
-type Ease = 'in' | 'out' | 'io';
+type Ease = 'in' | 'out' | 'io' | 'flow';
 interface Key {
   t: number;
   p: Pose;
@@ -577,97 +576,63 @@ const MOVE_EXTRA: Record<MoveId, { width: number; launch: boolean; unblock: bool
   counter: { width: 1.7, launch: false, unblock: false },
 };
 
-// ------------------------------------------------------------------ THE VS FIST CLASH
-/**
- * THE FIST CLASH ON THE VS SCREEN. In the last two seconds of the lock-in count both machines throw a full-power
- * right hand at each other and lock fists in the middle of the frame — an Overdrive-weight collision, not a tap.
- *
- * BOTH MACHINES THROW THEIR RIGHT HAND. On this rig arm index 1 is the right one: the model is built facing +z
- * (its boots sit heel −z, toe +z), so at yaw 0 the right-hand side is −x — and that is exactly where arm 1 hangs
- * (clashtest.mjs §4 asserts it on the rig, then asserts that BOTH sides hand `arm: 1` to the animator). The player's
- * machine stands on the LEFT of the frame, so for his right hand to reach the middle the whole torso turns into the
- * punch — a real cross — while the opponent, standing on the right, throws the same right hand straight down the
- * line.
- *
- * THE FISTS MEET IN THE MIDDLE AND NEVER CROSS IT. This is the whole trick of the pose, and it is measured, not
- * eyeballed: each glove stops on ITS OWN side of the centre line (clashtest.mjs §2 walks every vertex of both glove
- * meshes on every frame). An earlier version had both fists swing THROUGH the middle — each glove ended up over the
- * opponent's half of the frame, so the two machines read as swapping arms and the meshes had to be threaded past
- * each other with millimetres to spare. Stopping each knuckle just short of the centre line is what makes the pose
- * read as a clash, and it is also what makes it physically safe: the closest pair of vertices is the two knuckles,
- * touching across the middle.
- *
- * THE TRACK IS ALIVE, NOT A HELD PHOTOGRAPH. Both machines are fully loaded in the first quarter-second of the
- * coil and they stay loaded right up to the release — but the hold is not a still frame: a procedural layer (see
- * `clashStateFrom`) keeps pressing and pulling against the load, sinking a hair, trembling on the servos. After
- * the hit the same layer flips into the grind: the two machines surge against each other, glove to glove, until
- * the transition covers the shot.
- *
- * THE GLOVE TIPS ARE THE ONLY THING THAT MEETS. The design rule of the shot: the two BODIES stay home — upright,
- * behind their own marks — and the two right hands do all the travelling, so the contact happens with nearly
- * straight arms in clean open air, clearly in front of both chests, the knuckle tip of one glove landing on the
- * knuckle tip of the other. (An earlier cut leaned both chests into the middle: the fists met in a tangle of
- * shoulders and it read as a chest punch. Lean is capped at 0.14 and the bodies never leave their half.)
- *
- * AND THE WHOLE MACHINE THROWS, NOT JUST THE ARM: weight goes forward (lunge), the rear foot re-plants on the
- * release (punchFoot), the chest unwinds through the punch (twist), the head tracks the opponent (head), and the
- * optics charge all the way through the coil and BLOW OUT on the exact frame the knuckles meet (strike → 1).
- */
-export const VS_CLASH_AT = 0.18; // s into the sped-up 3-second lock-in count: the wind-up starts almost at once
-export const VS_CLASH_HIT = 1.18; // s into the clash: the frame the fists meet (0.18 + 1.18 = 1.36 s = exactly the "1")
-export const VS_CLASH_AT_HIT = VS_CLASH_AT + VS_CLASH_HIT; // → 1.36 s (the lock counts at 0.68 s per beat now)
-export const VS_CLASH_DUR = 1.86; // the whole clash; past the hit the lock is HELD until the transition covers it
-export const VS_CLASH_REL = 0.86; // s: the throws are released out of the full coil — the whip rides on the driven rear foot
-// HOW FAR EACH MACHINE TURNS to square up on its opponent as it loads (rad) — measured together with the hit
-// poses so BOTH gloves land on the contact patch (the rig reads mirrored joint numbers asymmetrically, so these
-// two are NOT equal). Small on purpose: the bodies stay home; only the fists occupy the middle of the frame.
+// ------------------------------------------------------------------ MATCHMAKING FACE-OFF
+/** The live matchmaking stage is a neutral face-off: no punches or fist clash. */
+export const VS_LOCK_BEAT = 0.52; // each countdown number gets a crisp half-second beat
+export const VS_LOCK_BEATS = 3;
+export const VS_LOCK_DUR = VS_LOCK_BEAT * VS_LOCK_BEATS; // 1.56 s total, then launch
+export const VS_STAGE_SEP = 2.60; // half-spacing for the two-fighter portrait
+// Face the fighters toward the centre: the player on the left looks right; the opponent on the right looks left.
+export const VS_PLAYER_YAW = 0.42;
+export const VS_OPPONENT_YAW = -0.42;
+// Legacy name for offline clash-geometry diagnostics; the live stage uses VS_STAGE_SEP only.
+export const VS_CLASH_SEP = VS_STAGE_SEP;
+// The remaining clash keys below are retained for offline rig diagnostics only; matchmaking never calls them.
+export const VS_CLASH_AT = 0.18; // diagnostic track start
+export const VS_CLASH_HIT = 1.18; // diagnostic track contact time; not used by matchmaking
+export const VS_CLASH_AT_HIT = VS_CLASH_AT + VS_CLASH_HIT; // retained for offline rig diagnostics only
+export const VS_CLASH_DUR = 1.86; // legacy diagnostic track end
+export const VS_CLASH_REL = 0.74; // legacy diagnostic release beat
+// Diagnostic rig keys share a timeline; the live VS face-off simply holds the fighters' selected lobby poses.
 export const VS_CLASH_SQUARE_HERO = 0.07;
-export const VS_CLASH_SQUARE_FOE = 0.22;
-// HOW FAST the square-up runs. It MUST finish well before the throw: the feet re-plant onto the squared stance
-// early in the coil (see the footwork plan in clashStateFrom), so from VS_CLASH_SQUARE_T on the legs are settled —
-// no balance shuffle can fire while the fists are flying (that was the leg jitter: the pose turned through the
-// whole throw, the planted boots were left 1+ m off the stance, and the balance solver stepped both feet mid-punch).
+export const VS_CLASH_SQUARE_FOE = VS_CLASH_SQUARE_HERO;
 export const VS_CLASH_SQUARE_T = 0.45;
-/** THE TWO HIT POSES (both measured on the rig, per side): shoulder thrown forward and across, elbow ~10–20°
- *  from lock, the chest turned only a touch and NO lunge — the bodies stay home and upright, the arms do all
- *  the travelling. The two right gloves land as mirror images on the contact patch: centres 1.25 m apart,
- *  level at 5.8 m, 1.35 m clear of both chests — the knuckle TIPS of the two gloves are what meets.
- *  NOTE the numbers are deliberately NOT mirror-writes of each other in `sy`/`sz`: this rig reads the two arm
- *  channels differently from a pure sign flip, so each side is solved for where its glove actually lands. */
-/** THE CLASH IS BUILT OUT OF THE GAMEPLAY MOVES, not hand-authored pose guesses — the same rhythm that makes the
- *  fight's own punches read (COIL — the whole machine counter-rotates and sinks off the back foot → WHIP — chest,
- *  hips and fist fire through together). BOTH machines run the SAME authored numbers, mirrored by the stage rig,
- *  so they wind up in perfect tandem and unload in the same frames — two right crosses meeting tip-to-tip in the
- *  middle. The opponent's track. */
+/**
+ * Legacy player cross used only by the offline clash geometry harness; live matchmaking does not play it.
+ */
 export const VS_CLASH_KEYS: Key[] = [
   //         shoulder pitch / yaw / roll / elbow          twist   lean    lunge   dip    ease
   k(0.00, P(-0.55, -0.26, 0.32, -2.20), -0.05, -0.06, -0.04, 0.17, 'io'), // out of the stare-down
-  // THE COIL — lifted straight from the gameplay CROSS: chest counter-wound a full 1.15 rad, weight dumped onto
-  // the back foot, sinking half a crouch. No arm-waving: the whole machine loads. It deepens twice, the way the
-  // overdrive bolt's double coil does, so the wind-up reads as a machine winding to its structual limit...
-  k(0.38, P(-0.08, 0.85, 0.42, -2.60), -1.15, -0.26, -0.60, 0.36, 'out'), // the cross coil, exactly the fight's
-  k(0.62, P(-0.06, 0.92, 0.44, -2.66), -1.30, -0.30, -0.68, 0.44, 'io'), // ...and deeper — held while the crowd rises
-  k(0.86, P(-0.05, 0.95, 0.44, -2.72), -1.42, -0.32, -0.72, 0.56, 'io'), // FULLY wound — the overdrive coil depth
-  // THE WHIP — both crosses fire in the SAME frames (tandem): the whole machine unwinds from −1.42 rad through
-  // the release, the right hand lands with hips, chest and shoulder behind it. The LAND itself is measured per
-  // side, so mirrored or not, both knuckles arrive at the patch at once, tip to tip, in clean open air.
-  k(1.06, P(-1.54, 0.21, 0.32, -0.34), 0.56, 0.11, 0.0, 0.15, 'in'), // keyframe leads the springs: the gloves ROW the "1"
-  k(1.50, P(-1.54, 0.21, 0.32, -0.34), 0.56, 0.11, 0.02, 0.15, 'io'), // the push — he drives INTO the lock...
-  k(1.86, P(-1.54, 0.21, 0.32, -0.34), 0.56, 0.11, 0.02, 0.15, 'io'), // ...held until the shot is covered
-];
-/** the player's track: the SAME coil keys (the two machines wind in perfect tandem) and his OWN measured land. */
-export const VS_CLASH_KEYS_CROSS: Key[] = [
-  k(0.00, P(-0.55, -0.26, 0.32, -2.20), -0.05, -0.06, -0.04, 0.17, 'io'),
+  // COIL: turn the right cross fully into its rear-shoulder chamber, fist high and body loaded over the back foot.
   k(0.38, P(-0.08, 0.85, 0.42, -2.60), -1.15, -0.26, -0.60, 0.36, 'out'),
-  k(0.62, P(-0.06, 0.92, 0.44, -2.66), -1.30, -0.30, -0.68, 0.44, 'io'),
-  k(0.86, P(-0.05, 0.95, 0.44, -2.72), -1.42, -0.32, -0.72, 0.56, 'io'), // fully wound, at the same instant as his foe
-  k(1.06, P(-1.63, -0.42, 0.17, -0.14), 0.58, 0.05, 0.0, 0.17, 'in'), // keyframe leads the springs: lands as the "1" lands
-  k(1.50, P(-1.63, -0.42, 0.17, -0.14), 0.58, 0.05, 0.0, 0.17, 'io'),
-  k(1.86, P(-1.63, -0.42, 0.17, -0.14), 0.58, 0.05, 0.0, 0.17, 'io'),
+  k(0.56, P(-1.10, 0.75, 0.60, -2.20), -1.15, -0.38, -0.72, 0.56, 'io'), // fist high beside the shoulder
+  k(0.68, P(-1.10, 0.75, 0.60, -2.20), -1.15, -0.38, -0.72, 0.56, 'io'), // hold the full-power chamber so it reads
+  // RELEASE: the rear boot drives first; hips, chest and shoulder then unwind through a long, clean arc.
+  k(0.74, P(-0.82, 0.66, 0.50, -2.22), -1.08, -0.31, -0.58, 0.50, 'io'),
+  k(0.90, P(-0.62, 0.20, 0.30, -1.55), -0.46, -0.12, -0.28, 0.31, 'flow'),
+  k(0.9325, P(-0.765, 0.08, 0.278, -1.345), -0.325, -0.095, -0.235, 0.288, 'flow'),
+  k(0.965, P(-0.91, -0.04, 0.255, -1.14), -0.19, -0.07, -0.19, 0.265, 'flow'), // subdivide the release arc to keep it fluid at 60 fps
+  k(1.03, P(-1.20, -0.28, 0.21, -0.72), 0.08, -0.02, -0.10, 0.22, 'flow'),
+  // CONTACT: stay just shy of the other glove, then let the knuckles meet exactly on the impact beat.
+  k(1.13, P(-1.56, -0.46, 0.19, -0.26), 0.34, 0.01, -0.02, 0.19, 'flow'),
+  k(1.18, P(-1.63, -0.53, 0.17, -0.10), 0.58, 0.05, 0.0, 0.17, 'flow'),
+  // RECOIL: a small, controlled give through the elbows and shoulders keeps the gloves from clipping after impact.
+  k(1.27, P(-1.57, -0.46, 0.19, -0.30), 0.44, 0.02, 0.0, 0.20, 'flow'),
+  k(1.50, P(-1.57, -0.46, 0.19, -0.30), 0.44, 0.02, 0.0, 0.20, 'io'),
+  k(1.86, P(-1.57, -0.46, 0.19, -0.30), 0.44, 0.02, 0.0, 0.20, 'io'), // stay close through the transition
 ];
+/** Mirrored-rig opponent tuning: same event times, but its own right glove also chambers outside the chest line. */
+export const VS_CLASH_KEYS_FOE: Key[] = VS_CLASH_KEYS.map((key) => {
+  if (key.t === 0.38) return { ...key, p: P(-0.08, -0.35, 0.42, -2.60) };
+  if (key.t === 0.56 || key.t === 0.68) return { ...key, p: P(-1.10, -0.90, 0.60, -2.20) };
+  if (key.t === 0.74) return { ...key, p: P(-0.82, -0.55, 0.52, -2.22), twist: -1.08, lean: -0.31, lunge: -0.58, dip: 0.50 };
+  return key;
+});
+// Backward-compatible name for the player's authored cross; use VS_CLASH_KEYS_FOE for opponent pose checks.
+export const VS_CLASH_KEYS_CROSS = VS_CLASH_KEYS;
 /** one side's clash pose, sampled: the arms, the body channels and the show — THE numbers the game runs. */
 export interface ClashPose {
-  arm: 0 | 1; // 1 = the machine's RIGHT hand
+  arm: 0 | 1; // both duelists use their own right hand (arm 1)
   arms: [Pose, Pose];
   twist: number;
   lean: number;
@@ -720,60 +685,68 @@ export const clashStateFrom = (keys: Key[], side: 'hero' | 'foe', t: number, seq
   // left the other foot more than ~0.6 m behind the stance, so the solver never fires:
   //   t 0.04  the LEAD foot settles,
   //   t 0.24  the REAR foot settles (landing just as the turn completes at 0.45),
-  //   t 0.56  the rear foot DRIVES into the release — the scripted re-plant the throw rides on.
+  //   t 0.70  the rear foot DRIVES into the release — the scripted re-plant the throw rides on.
   // Each entry carries a new seq so the rig fires it exactly once (see robot.ts punch footwork), and the targets
   // ride on the same `ideal` stance anchors the fight uses. From t 0.50 (VS_CLASH_SQUARE_T) the body no longer
   // turns at all, so through the throw and the grind the boots simply STAY.
+  const sideSign = side === 'hero' ? 1 : -1;
   const seqBase = seq * 4;
-  let punch = -1;
+  let localFoot = -1;
   let punchSeq = seqBase;
   let punchX = 0;
   let punchZ = 0.02;
   let punchDur = 0.22;
   if (t >= 0.04 && t < 0.24) {
-    punch = 0;
-    punchSeq = seqBase + 1; // the lead foot settles
+    localFoot = 0; // settle the lead foot
+    punchSeq = seqBase + 1;
   } else if (t >= 0.24 && t < VS_CLASH_REL) {
-    punch = 1;
-    punchSeq = seqBase + 2; // the rear foot settles
+    localFoot = 1; // settle the rear foot
+    punchSeq = seqBase + 2;
   } else if (t >= VS_CLASH_REL) {
-    punch = 1;
-    punchSeq = seqBase + 3; // ...and DRIVES the throw
-    punchX = side === 'hero' ? 0.1 : -0.1;
+    localFoot = 1; // the rear foot drives the throw
+    punchSeq = seqBase + 3;
+    punchX = 0.1;
     punchZ = 0.5;
     punchDur = 0.24;
   }
+  // Reflect the footwork as well as the upper body: the hero loads onto his right/rear leg while the opponent loads
+  // onto his left/rear leg. This keeps their boots and hips from drifting out of sync during the shared cross.
+  const punch = localFoot < 0 ? -1 : side === 'hero' ? localFoot : 1 - localFoot;
+  if (side === 'foe') punchX *= -1;
 
   const rel = Math.min(1, Math.max(0, (t - VS_CLASH_REL) / (VS_CLASH_HIT - VS_CLASH_REL)));
   const strike = t >= VS_CLASH_HIT ? 1 : Math.min(0.999, 0.22 + 0.34 * Math.min(1, t / 0.55) + 0.62 * rel);
-  // THE OPPONENT IS THE MIRROR IMAGE of the player's machine: same cross, thrown with the same right hand, but
-  // every lateral channel of the arm (shoulder yaw `sy`, shoulder roll `sz`) flips — that is what makes the two
-  // bodies true reflections of each other, chest to chest, with their gloves meeting in the middle.
-  const mir = side === 'foe' ? -1 : 1;
+  const guard: Pose = {
+    ...GUARD,
+    sx: GUARD.sx - 0.10 * shock + strain * 0.5,
+    sy: GUARD.sy + sink * 1.2,
+    sz: GUARD.sz,
+    ex: GUARD.ex + strain * 0.6,
+  };
+  const thrown: Pose = {
+    ...s.p,
+    sx: s.p.sx + strain * 0.55,
+    sy: s.p.sy,
+    sz: s.p.sz,
+    ex: s.p.ex + strain * 0.7,
+  };
   return {
-    arm: 1, // BOTH machines throw their RIGHT hand (see the note above)
-    arms: [
-      // the guard hand stays up, breathes with the load and shrugs on the shock
-      { ...GUARD, sx: GUARD.sx - 0.10 * shock + strain * 0.5, sy: mir * (GUARD.sy + sink * 1.2), sz: mir * GUARD.sz, ex: GUARD.ex + strain * 0.6 },
-      { ...s.p, sx: s.p.sx + strain * 0.55, sy: mir * s.p.sy, sz: mir * s.p.sz, ex: s.p.ex + strain * 0.7 },
-    ],
-    twist: (side === 'foe' ? -s.twist : s.twist) + strain * 0.55,
+    arm: 1,
+    // Arm index 1 is each duelist's own right hand; keep index 0 in guard on both rigs during the VS cross.
+    arms: [guard, thrown],
+    twist: sideSign * (s.twist + strain * 0.55),
     lean: s.lean + strain * 0.30 + sink * 0.5,
     dip: s.dip + sink,
-    // the servo tremble lives in the ARMS only: buzzing the pelvis roll shimmy'd the whole leg line (the IK
-    // chases the pelvis), which on screen read as the knees shivering through the lock — the legs stay planted.
-    roll: strain * 0.06,
+    // Keep the legs planted while mirroring the small servo tremble through the chest.
+    roll: sideSign * strain * 0.06,
     glow: 0.45 + 0.5 * charge + 1.15 * shock + grind * 0.35,
-    yaw: (side === 'hero' ? VS_CLASH_SQUARE_HERO : VS_CLASH_SQUARE_FOE) * square,
+    yaw: VS_CLASH_SQUARE_HERO * square,
     lunge: s.lunge + grind * 0.01,
     strike,
     pow: 0.95,
-    // the gaze: the opponent is off to this machine's own right (he is punching across the frame), chin height
-    lookX: (side === 'hero' ? -1 : 1) * (0.35 + 0.35 * Math.min(1, t / 0.55)),
+    lookX: sideSign * -(0.35 + 0.35 * Math.min(1, t / 0.55)),
     lookY: 0.10,
-    // ...and the face follows the fists: the chest unwinds under the head, so the neck has to unwind back the
-    // other way — the numbers below put BOTH faces on the opponent's glove (clashtest.mjs §3 measures the angle).
-    head: side === 'hero' ? 0.24 + 0.46 * face : -(0.20 - 0.10 * face),
+    head: sideSign * (0.24 + 0.46 * face),
     punch,
     punchSeq,
     punchX,
@@ -784,43 +757,34 @@ export const clashStateFrom = (keys: Key[], side: 'hero' | 'foe', t: number, seq
     shock,
   };
 };
-/** the LIVE clash pose for a side: the player throws the cross, the opponent the straight. */
+/** Both robots use their own right hands (arm 1) on one clock, with side-tuned chambers converging at centre. */
 export const vsClashState = (side: 'hero' | 'foe', t: number, seq = 1): ClashPose =>
-  clashStateFrom(side === 'hero' ? VS_CLASH_KEYS_CROSS : VS_CLASH_KEYS, side, t, seq);
-/**
- * WHERE THE TWO FISTS ACTUALLY MEET: the mid-point between the two glove centres at the hit, measured on the rig
- * with the real tracks (clashtest.mjs §3b measures it too, and fails if this point drifts more than a few
- * centimetres off them). The impact flash, the shock ring and the sparks are drawn HERE, and the clash camera aims
- * its look onto it — so the light is always on the contact patch, not near it.
- */
-export const VS_CLASH_POINT = { x: 0.13, y: 5.86, z: 1.36 }; // the measured midpoint of the two right-glove knuckle tips when the count says "1"
+  clashStateFrom(side === 'hero' ? VS_CLASH_KEYS : VS_CLASH_KEYS_FOE, side, t, seq);
+/** Measured contact point retained for the offline rig diagnostics; the live matchmaking face-off has no impact FX. */
+export const VS_CLASH_POINT = { x: 0.16, y: 5.92, z: 1.37 };
 
 // ------------------------------------------------------------------ THE TRANSITION (menu → ring) SETTING
 /**
- * HOW THE LOBBY HANDS OVER TO THE RING. The clash is the last thing you see on the VS screen; the transition is
- * what covers the cut from that shot into the ring walk. Every one of them plays over the SAME beat — the overlay
- * covers the screen, the match is launched underneath it, the overlay opens again on the arena — so switching this
- * setting can never change WHEN the fight starts, only how it is dressed.
+ * HOW THE LOBBY HANDS OVER TO THE RING. The short VS countdown ends with the selected transition; it covers the
+ * cut into the ring walk, then opens onto the arena. Changing this setting changes the hand-off style, not when the
+ * three-count finishes or when the fight starts.
  */
 export type TransId = 'zoom' | 'flash' | 'wipe' | 'shock' | 'cut';
 export interface TransMeta {
   id: TransId;
   name: string;
   hint: string;
-  /** ms until the screen is fully covered (and how long it STAYS covered). The bell goes at 1000 ms
-   *  (the lock-in count is 3 s and the clash fires on the "1"), so every kind covers well before that. */
+  /** milliseconds until full cover; the chosen effect continues while the arena loads */
   cover: number;
   /** ms of the reveal on the far side, on top of the cover */
   open: number;
 }
-/** the beat between the fist clash and the bell: the transition has to have covered the screen by then */
-export const TRANS_COVER_LEAD = 1000;
 export const TRANSITIONS: TransMeta[] = [
-  { id: 'zoom', name: 'PUNCH ZOOM', hint: 'zoom ke adu tinju lalu gelap, masuk ring', cover: 1080, open: 620 },
-  { id: 'flash', name: 'FLASH PUTIH', hint: 'hentakan jadi kilat putih, pecah ke arena', cover: 1080, open: 760 },
-  { id: 'wipe', name: 'WIPE BAJA', hint: 'pelat baja menyapu layar kiri ke kanan', cover: 1080, open: 620 },
-  { id: 'shock', name: 'GELOMBANG', hint: 'cincin hentakan melebar, gelap, lalu pulih', cover: 1080, open: 700 },
-  { id: 'cut', name: 'HARD CUT', hint: 'tanpa transisi — hentakan langsung ke ring', cover: 90, open: 130 },
+  { id: 'zoom', name: 'ZOOM MASUK', hint: 'zoom singkat lalu gelap, masuk ring', cover: 520, open: 360 },
+  { id: 'flash', name: 'FLASH PUTIH', hint: 'kilat singkat, lalu buka ke arena', cover: 520, open: 360 },
+  { id: 'wipe', name: 'WIPE BAJA', hint: 'pelat baja menyapu layar kiri ke kanan', cover: 520, open: 360 },
+  { id: 'shock', name: 'GELOMBANG', hint: 'cincin singkat, gelap, lalu pulih', cover: 520, open: 300 },
+  { id: 'cut', name: 'HARD CUT', hint: 'langsung masuk ring', cover: 90, open: 130 },
 ];
 const LS_TRANS = 'steel-titans-transition-v1';
 export const loadTrans = (): TransId => {
@@ -965,7 +929,9 @@ const wrapAngle = (a: number) => {
 };
 const lerpPose = (a: Pose, b: Pose, t: number): Pose => ({ sx: lerp(a.sx, b.sx, t), sy: lerp(a.sy, b.sy, t), sz: lerp(a.sz, b.sz, t), ex: lerp(a.ex, b.ex, t) });
 
-const applyEase = (u: number, e: Ease) => (e === 'in' ? Math.pow(u, 2.6) : e === 'out' ? 1 - Math.pow(1 - u, 2.4) : smooth(u));
+// `flow` keeps half the linear velocity through intermediate clash keys and half the smoothstep ease, avoiding a
+// stop-start whip while still softening the wind-up and the final contact.
+const applyEase = (u: number, e: Ease) => (e === 'in' ? Math.pow(u, 2.6) : e === 'out' ? 1 - Math.pow(1 - u, 2.4) : e === 'flow' ? 0.5 * u + 0.5 * smooth(u) : smooth(u));
 
 function sampleKeys(keys: Key[], t: number): Key {
   if (t <= keys[0].t) return keys[0];
@@ -1327,9 +1293,9 @@ const INTRO_COUNT = [0.95, 1.75, 2.55]; // when the 3 · 2 · 1 cards drop
 
 // ------------------------------------------------------------------ THE GRAPHICS LADDER
 /**
- * The picture is meant to look like this on purpose, and it is meant to hold 60 every second of the fight. Five
- * rungs, each one giving up exactly one thing — the hall reflection, the MSAA samples, the render scale, the
- * shadow map — so the fall from MAKSIMAL to RINGAN is a soft one and every rung still looks like the same show.
+ * The auto ladder holds a 60 Hz target while keeping the render scale at full resolution on every rung but the last.
+ * It sheds the expensive reflections, MSAA and shadow detail first; bloom stays present at a smaller mip scale so
+ * the arena keeps its finish without forcing an early drop in image clarity.
  */
 export interface QualityTier {
   key: string;
@@ -1348,11 +1314,11 @@ export interface QualityTier {
   bloomScale: number;
 }
 export const QUALITY_TIERS: QualityTier[] = [
-  { key: 'max', name: 'MAKSIMAL', mirror: 2, samples: 4, scale: 1.0, shadow: 2048, bloom: true, bloomScale: 0.5 },
-  { key: 'high', name: 'TINGGI', mirror: 2, samples: 2, scale: 1.0, shadow: 2048, bloom: true, bloomScale: 0.5 },
-  { key: 'balanced', name: 'SEIMBANG', mirror: 1, samples: 2, scale: 1.0, shadow: 1536, bloom: true, bloomScale: 0.34 },
-  { key: 'performance', name: 'KINERJA', mirror: 0, samples: 0, scale: 0.88, shadow: 1024, bloom: true, bloomScale: 0.25 },
-  { key: 'lite', name: 'RINGAN', mirror: 0, samples: 0, scale: 0.72, shadow: 1024, bloom: false, bloomScale: 0.25 },
+  { key: 'max', name: 'MAKSIMAL', mirror: 2, samples: 2, scale: 1.0, shadow: 2048, bloom: true, bloomScale: 0.36 },
+  { key: 'high', name: 'TINGGI', mirror: 1, samples: 0, scale: 1.0, shadow: 1536, bloom: true, bloomScale: 0.30 },
+  { key: 'balanced', name: 'SEIMBANG', mirror: 0, samples: 0, scale: 1.0, shadow: 1280, bloom: true, bloomScale: 0.25 },
+  { key: 'performance', name: 'KINERJA', mirror: 0, samples: 0, scale: 1.0, shadow: 1024, bloom: true, bloomScale: 0.21 },
+  { key: 'lite', name: 'RINGAN', mirror: 0, samples: 0, scale: 0.90, shadow: 768, bloom: true, bloomScale: 0.18 },
 ];
 
 export type GfxMode = 'auto' | 'max' | 'balanced' | 'performance';
@@ -1449,24 +1415,25 @@ export class Game {
   private longFrames = 0; // ...and how many of them missed the 60 Hz beat
   private dprCap = 1.5; // the device pixel ratio this screen is allowed to render at (see bootDprCap)
   private quality = 1.0; // the render scale of the CURRENT tier
+  private bloomScale = 0.5; // current bloom mip scale; changing tiers must resize the pass even if render scale stays HD
   private mirrorsOn = true;
   private hallMirrorOn = true;
-  // THE QUALITY LADDER: the frame budget is a locked 60. Each rung (0 = everything on) trades one thing for speed —
-  // the floor reflections, the multisample count, the render scale, the shadow map — and the governor climbs back up
-  // when the frame time has been solid for a while, never retrying a rung that already failed.
+  // THE QUALITY LADDER: target a locked 60 without downscaling HD early. Rungs shed reflections, samples and shadow
+  // detail before the final tier modestly lowers render scale; the governor climbs back only after sustained headroom.
   private qTier = 0;
   private qAuto = true; // false = the player pinned a tier from the graphics menu
   private qMode: GfxMode = 'auto';
   private qTierFailed = -1;
   private qSteady = 0;
   private qCooldown = 0;
-  private qWarm = 2.2; // seconds of grace at boot: shader compilation and the first uploads are not the GPU's fault
+  private qWarm = 1.4; // short grace at boot: let the first shaders compile, then let the 60 Hz governor step in quickly
   // THE AUTO-EXPOSURE: the frame's own brightness drives the grade's exposure, the way a broadcast camera rides its
   // iris. It is deliberately slow (about a second to settle) and its range is small — it cannot rescue a scene that
   // was badly lit, it only keeps a hard-strobing rig, a flash or a bloom surge from blowing the picture out.
   private meter: MeterPass;
   private aeDead = false; // the readback failed on this driver: stop asking for it
-  private aeFrames = 0; // frames since the last readback (the GPU is at least a frame behind)
+  private aePending = false; // only one asynchronous GPU readback may use aeBuf at a time
+  private aeFrames = 0; // frames since the last metering sample
   private aeBuf = new Uint8Array(4);
   private aeKey = 0.28; // display-referred: 0.26 ≈ a normally exposed frame, 0.5 = running hot
   private aeGain = 1;
@@ -1546,22 +1513,9 @@ export class Game {
   private hangar: Hangar;
   /** the VS screen: the opponent (and the 2v2 partner) standing opposite the hero in the hangar */
   private vs: { idx: number; idx2: number; stage: 'search' | 'found' | 'lock' } | null = null;
-  private vsPunch = 0; // the lens punch-in on the reveal / the lock, decays
-  // THE FIST CLASH (see VS_CLASH_KEYS): vsLockT drives the lock-in count, vsClash runs the clash track,
-  // vsShake is the impact ring-down that lets the lobby camera shake for a beat (normally it never does).
-  private vsLockT = 0;
-  private vsClash = -1;
-  private vsClashHit = false;
-  private vsShakeT = 0;
-  private vsKick = 0; // 0..1 lens dive as the fists meet
-  private vsSeq = 1; // clash id: every fresh clash re-plants the rear foot exactly once (see vsClashAnim)
-  /** The VS stage is an equal-weight bout: the clash pose is measured with both machines at scale 1, so the
-   *  opponent's true chassis scale is parked here while he stands on the stage and handed back to him when the
-   *  ring takes him (restore in setVsMode(null)). */
+  private vsPunch = 0; // brief lens punch-in on the opponent reveal, decays before the countdown
+  /** Preserve each opponent's selected chassis scale while it stands on the neutral VS stage portrait. */
   private vsScaleBackup = new Map<Robot, number>();
-  private vsSparkT = 0; // FX cadence for the coil crackle / the grind sparks
-  private vsWhoosh = false; // one throw = one whoosh
-  private vsRingT = 0; // FX cadence for the grind pressure rings
   private vsFoe: Fighter | null = null;
   private vsFoe2: Fighter | null = null;
   private menuHeroPedestal: THREE.Group;
@@ -1591,9 +1545,8 @@ export class Game {
     this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap; // one map, plain PCF: half the shadow cost of the soft kernel
-    // PBR-NEUTRAL TONE MAP: it keeps the saturation and the hue of the lights (ACES washes the reds and the blues
-    // out into pastels as they brighten) while still rolling the highlights off softly — the reason the arena can
-    // now be pushed much brighter without the picture turning milky.
+    // PBR-NEUTRAL TONE MAP: it preserves the hue of red and blue lighting while rolling bright highlights off softly.
+    // The arena rig and exposure are deliberately restrained so this preserves colour instead of washing it out.
     this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.renderer.toneMappingExposure = 1.0;
     container.appendChild(this.renderer.domElement);
@@ -1601,7 +1554,7 @@ export class Game {
 
     const pm = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
-    this.scene.environmentIntensity = 0.38; // metal lives on its reflections — a touch above the old 0.34 without lifting the whole picture
+    this.scene.environmentIntensity = 0.30; // retain metallic reflections while preserving darker armour and canvas contrast
 
     this.arena = buildArena(this.scene);
     this.hangar = buildHangar(this.scene);
@@ -1620,7 +1573,7 @@ export class Game {
     // the canvas, the steel and the crowd stay exactly as lit as they were and only the things that are genuinely
     // over-bright (a lamp lens, an LED strip, a jumbotron, a hot spark) bleed a soft glow into the dark of the
     // hall. That is the whole trick: the arena is not brighter, the LIGHTS are.
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.4, 0.6, 1.16);
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.18, 0.4, 1.6);
     this.bloom.enabled = this.tierCfg().bloom;
     const baseBloomSize = UnrealBloomPass.prototype.setSize;
     const bloom = this.bloom;
@@ -2514,8 +2467,8 @@ export class Game {
   }
 
   /**
-   * THE VS SCREEN STAGE: the hero steps to the left mark, the opponent (and in 2v2 the second Titan) takes the
-   * right mark, both in the hangar, both facing the lens. `found` reveals the opponent; null strikes the set.
+   * THE MATCHMAKING STAGE: the player takes the left mark, the opponent (and in 2v2 the second Titan) takes the
+   * right mark, and both keep the selected menu pose while facing inward. `found` reveals the opponent; null exits.
    */
   setVsMode(idx: number | null, idx2 = -1, stage: 'search' | 'found' | 'lock' = 'search') {
     if (idx === null) {
@@ -2532,10 +2485,6 @@ export class Game {
       this.vs = null;
       this.vsFoe = null;
       this.vsFoe2 = null;
-      this.vsClash = -1;
-      this.vsLockT = 0;
-      this.vsShakeT = 0;
-      this.vsKick = 0;
       this.hangar.setVsBackdrop(false);
       if (this.menuHero) {
         this.menuHero.root.rotation.y = this.heroYaw;
@@ -2567,10 +2516,8 @@ export class Game {
       this.setVsMode(null);
       this.vsFoe = foeOf(idx);
       this.vsFoe2 = foeOf(idx2);
-      // EQUAL-WEIGHT BOUT. The fist-clash pose (and VS_CLASH_POINT, and the camera dive onto it) is measured with
-      // BOTH machines at scale 1; a 1.2× titan's arm is 20 % longer, so the same pose made his glove sail past the
-      // player's parked fist and float in front of the player's chest — "nyerang dada", not a clash. For the stage
-      // both sides stand at the hero's scale; the true scale returns with the ring (setVsMode(null)).
+      // EQUAL-WEIGHT PORTRAIT. Keep both Titans at the hero's scale for a balanced VS-stage composition; their
+      // selected chassis sizes are restored when the match enters the ring (setVsMode(null)).
       for (const f of [this.vsFoe, this.vsFoe2]) {
         if (!f) continue;
         this.vsScaleBackup.set(f.robot, f.robot.root.scale.x);
@@ -2580,18 +2527,27 @@ export class Game {
       // feet already snapped under the stance — otherwise the stage opens with a boot shuffle under the names.
       const hx = HANGAR_POS.x;
       const hz = HANGAR_POS.z;
-      this.menuHero.root.position.set(hx - 2.75, 0, hz);
-      this.menuHero.root.rotation.y = 0.42;
+      this.menuHero.root.position.set(hx - VS_STAGE_SEP, 0, hz);
+      this.menuHero.root.rotation.y = VS_PLAYER_YAW;
       this.menuHero.snapFeet();
       if (this.vsFoe) {
-        this.vsFoe.robot.root.position.set(hx + 2.75, 0, hz);
-        this.vsFoe.robot.root.rotation.y = -0.42;
+        this.vsFoe.robot.root.position.set(hx + VS_STAGE_SEP, 0, hz);
+        this.vsFoe.robot.root.rotation.y = VS_OPPONENT_YAW;
         this.vsFoe.robot.snapFeet();
       }
       if (this.vsFoe2) {
-        this.vsFoe2.robot.root.position.set(hx + 2.75 + 2.4, 0, hz - 2.6);
-        this.vsFoe2.robot.root.rotation.y = -0.42 - 0.15;
+        this.vsFoe2.robot.root.position.set(hx + VS_STAGE_SEP + 2.4, 0, hz - 2.6);
+        this.vsFoe2.robot.root.rotation.y = VS_OPPONENT_YAW - 0.15;
         this.vsFoe2.robot.snapFeet();
+      }
+      // Prime the menu's current selected pose on all VS rigs before the next rendered frame. They match the lobby
+      // silhouette, then simply square up toward each other with no visible rise into the pose.
+      const heroStagePose = this.heroAnimState(this.heroPose, this.time, 0, 0, false, true);
+      const opponentStagePose = this.heroAnimState(this.heroPose, this.time, 0, 0, true, true);
+      for (let i = 0; i < 60; i++) {
+        this.menuHero.animate(heroStagePose, 1 / 60);
+        this.vsFoe?.robot.animate(opponentStagePose, 1 / 60);
+        this.vsFoe2?.robot.animate(opponentStagePose, 1 / 60);
       }
     }
     const prev = this.vs?.stage ?? 'search';
@@ -2601,16 +2557,6 @@ export class Game {
       } else if (stage === 'lock') {
         this.vsPunch = 0.7;
         this.sfx.ready();
-        // the count that ends in the bell: the clash fires on its own beat inside it (see animateMenuHero)
-        this.vsLockT = 0;
-        this.vsClash = -1;
-        this.vsClashHit = false;
-        this.vsShakeT = 0;
-        this.vsKick = 0;
-      } else {
-        this.vsLockT = 0;
-        this.vsClash = -1;
-        this.vsClashHit = false;
       }
     }
     this.vs = { idx, idx2, stage };
@@ -3281,11 +3227,11 @@ export class Game {
     const raw = Math.min(0.066, frameMs / 1000);
     this.last = now;
     this.fpsEma += (Math.min(frameMs, 250) - this.fpsEma) * 0.08;
-    // the governor watches for MISSED 60 Hz BEATS, not for an average: a stutter is what the player feels, so a
-    // window in which a quarter of the frames ran long is enough to step a rung down.
+    // Watch frame pacing, not just average FPS: sustained frames beyond 17.8 ms step a rung before the fight feels
+    // uneven, while a few isolated browser-scheduler spikes are absorbed by the half-second window.
     this.fpsT += frameMs / 1000;
     this.frames++;
-    if (frameMs > 20.5) this.longFrames++;
+    if (frameMs > 17.8) this.longFrames++;
     if (this.fpsT >= 0.5) {
       this.fps = this.frames / Math.max(0.05, this.fpsT);
       if (this.qWarm > 0) {
@@ -3313,17 +3259,17 @@ export class Game {
     const ms = this.fpsEma;
     this.qCooldown = Math.max(0, this.qCooldown - 0.5);
     const last = this.qTier >= QUALITY_TIERS.length - 1;
-    if (badFrameShare > 0.22 || ms > 21.5) {
+    if (badFrameShare > 0.18 || ms > 19.2) {
       this.qSteady = 0;
       if (this.qCooldown > 0 || last) return;
       this.qTierFailed = this.qTier;
       this.applyTier(this.qTier + 1);
-      // a hard miss (25 fps territory) reacts at once, a marginal one waits a beat before giving anything up
-      this.qCooldown = ms > 27 || badFrameShare > 0.45 ? 1.0 : 2.4;
+      // react quickly to a 60 Hz miss, but keep a short cooldown so one noisy window cannot cascade the ladder
+      this.qCooldown = ms > 27 || badFrameShare > 0.45 ? 0.8 : 1.6;
       return;
     }
-    if (badFrameShare < 0.05 && ms < 19.2 && this.qTier > 0 && this.qTier - 1 !== this.qTierFailed) {
-      // a genuinely solid 60 for five seconds: climb one rung back up
+    if (badFrameShare < 0.05 && ms < 18.0 && this.qTier > 0 && this.qTier - 1 !== this.qTierFailed) {
+      // near-60 pacing with real headroom for five seconds: climb one rung back up
       this.qSteady += 0.5;
       if (this.qSteady >= 5) {
         this.qSteady = 0;
@@ -3340,7 +3286,8 @@ export class Game {
     if (next === this.qTier && !force) return;
     this.qTier = next;
     const cfg = this.tierCfg();
-    // 1 · the glossy floors: the canvas sheen first, the hall floor second (it is the bigger, softer one)
+    let needsResize = false;
+    // 1 · the glossy floors: drop the hall reflection first, then the canvas sheen
     const canvasMirror = cfg.mirror >= 1;
     const hallMirror = cfg.mirror >= 2;
     if (this.arena && (force || canvasMirror !== this.mirrorsOn || hallMirror !== this.hallMirrorOn)) {
@@ -3348,7 +3295,7 @@ export class Game {
       this.hallMirrorOn = hallMirror;
       this.arena.setMirrors(canvasMirror, hallMirror);
     }
-    // 2 · the multisample count on the HDR target (the grade pass FXAA covers what is left)
+    // 2 · HDR multisampling; the grade pass FXAA still cleans the edges when samples are off
     if (this.composer) {
       for (const rt of [this.composer.renderTarget1, this.composer.renderTarget2]) {
         if (rt.samples !== cfg.samples) {
@@ -3357,13 +3304,7 @@ export class Game {
         }
       }
     }
-    // 3 · the render scale — the single biggest lever there is
-    if (force || cfg.scale !== this.quality) {
-      this.quality = cfg.scale;
-      this.renderer.setPixelRatio(this.pixelRatio());
-      if (this.composer) this.resize();
-    }
-    // 4 · the shadow map of the key light
+    // 3 · shadow detail comes down before the final rung touches HD render scale
     if (this.arena) {
       const sh = this.arena.keyLight.shadow;
       if (sh.mapSize.x !== cfg.shadow) {
@@ -3374,8 +3315,19 @@ export class Game {
         }
       }
     }
-    // 5 · the bloom
+    // 4 · preserve full render scale through KINERJA; only RINGAN gives up a small amount of pixel density
+    if (force || cfg.scale !== this.quality) {
+      this.quality = cfg.scale;
+      this.renderer.setPixelRatio(this.pixelRatio());
+      needsResize = true;
+    }
+    // 5 · bloom never disappears; only its mip resolution steps down, and that change needs a pass resize too
+    if (cfg.bloomScale !== this.bloomScale) {
+      this.bloomScale = cfg.bloomScale;
+      needsResize = true;
+    }
     if (this.bloom) this.bloom.enabled = cfg.bloom;
+    if (needsResize && this.composer) this.resize();
   }
 
   /** the render scale this device is allowed to run at, on top of the current tier */
@@ -3388,16 +3340,15 @@ export class Game {
   }
 
   /**
-   * A 4K panel at dpr 2 means eight million pixels of HDR with MSAA and post — no GPU holds that at 60. The cap
-   * keeps the frame inside a sane pixel budget (the FXAA and the MSAA share the edge work, so a slightly lower
-   * density is invisible), and every rung of the ladder then scales it further.
+   * A 4K panel at dpr 2 can push eight million HDR pixels through the scene and post passes. Cap the initial pixel
+   * budget near three million, then let the governor shed reflections and shadow cost before it ever lowers HD scale.
    */
   static bootDprCap() {
     try {
       const dpr = window.devicePixelRatio || 1;
       const w = window.innerWidth || 1280;
       const h = window.innerHeight || 720;
-      const budget = 2.9e6; // ≈ 2266 × 1275, the sweet spot for a modern laptop GPU at a locked 60
+      const budget = 2.4e6; // ~2065 × 1160 pixels: HD+ detail without feeding excess pixels into every post-process pass
       return Math.max(0.75, Math.min(dpr, 2, Math.sqrt(budget / Math.max(1, w * h))));
     } catch {
       return 1.5;
@@ -3425,10 +3376,9 @@ export class Game {
     if (/intel/.test(gpu) && /(hd|uhd|iris|graphics)/.test(gpu)) return px > 3.2e6 ? 2 : 1;
     if (cores <= 2) return 3;
     if (cores <= 4 && px > 3.2e6) return 2;
-    // a discrete GPU we can name gets the full rig straight away — everything else starts one rung down and lets
-    // the governor PROMOTE it after five solid seconds, because a first-second stutter is worse than a slightly
-    // softer first second
-    if (/apple m[1-9]|nvidia|geforce|rtx|gtx|radeon|rx ?\d|arc a\d|quadro/.test(gpu)) return 0;
+    // Auto mode starts one rung below maximum even on a known discrete GPU; it can promote after stable headroom,
+    // but it never makes the first fight pay for two live reflections and full-resolution MSAA by default.
+    if (/apple m[1-9]|nvidia|geforce|rtx|gtx|radeon|rx ?\d|arc a\d|quadro/.test(gpu)) return 1;
     return gpu ? 1 : cores > 6 ? 1 : 2;
   }
 
@@ -3460,20 +3410,18 @@ export class Game {
     this.emitHud(true);
   }
 
-  /**
-   * THE IRIS. Downsample the composed HDR frame to a single averaged pixel (three halvings) and read it back every
-   * twelfth frame. `renderer.readRenderTargetPixels` is synchronous, so twelve frames of texture memory (plus the
-   * GPU's own pipeline depth) is the safe margin — and it is one pixel, so the transfer is nothing.
-   */
+  /** The one-pixel iris readback is asynchronous so it cannot stall the render thread on a GPU/CPU sync point. */
   private sampleScene() {
-    if (this.aeDead) return;
-    try {
-      this.renderer.readRenderTargetPixels(this.meter.rt, 0, 0, 1, 1, this.aeBuf);
+    if (this.aeDead || this.aePending) return;
+    this.aePending = true;
+    void this.renderer.readRenderTargetPixelsAsync(this.meter.rt, 0, 0, 1, 1, this.aeBuf).then(() => {
       const lum = (0.2126 * this.aeBuf[0] + 0.7152 * this.aeBuf[1] + 0.0722 * this.aeBuf[2]) / 255;
       this.aeKey += (THREE.MathUtils.clamp(lum, 0.001, 1.2) - this.aeKey) * 0.4;
-    } catch {
-      this.aeDead = true; // no readback on this driver — the picture simply keeps its fixed exposure
-    }
+      this.aePending = false;
+    }).catch(() => {
+      this.aeDead = true; // no asynchronous readback on this driver — keep the fixed exposure
+      this.aePending = false;
+    });
   }
 
   /** the exposure the grade pass is told to use: the fixed base, times the gentle auto-exposure correction */
@@ -3489,7 +3437,7 @@ export class Game {
     // Asymmetric ON PURPOSE: a hot frame gets pulled down, a dark one is left exactly as it was lit. An
     // auto-exposure that also brightens is how a night scene ends up looking like day.
     const key = this.aeKey / Math.max(0.001, this.bright); // normalised: the slider is not a lighting change
-    const want = THREE.MathUtils.clamp(0.26 / Math.max(0.02, key), 0.82, 1.0);
+    const want = THREE.MathUtils.clamp(0.25 / Math.max(0.02, key), 0.78, 1.0);
     this.aeGain += (want - this.aeGain) * (1 - Math.exp(-1.6 * dt));
   }
 
@@ -3512,16 +3460,13 @@ export class Game {
       const dt = this.freeze > 0 ? 0 : raw * this.timeScale;
       this.time += raw;
       if (this.phase === 'menu') {
-        // ...except through the fist clash: the lobby camera is a rock-solid portrait, and the one thing allowed to
-        // move it is the two machines slamming their fists together (vsShakeT, set on the impact).
-        if (this.vsShakeT <= 0.002) {
-          this.trauma = 0;
-          this.camBump = 0;
-          this.camPush = 0;
-          this.fovKick = 0;
-          this.camImp.set(0, 0, 0);
-          this.camImpVel.set(0, 0, 0);
-        }
+        // Keep the menu and matchmaking face-off stable; gameplay hit-shake starts only once the ring fight begins.
+        this.trauma = 0;
+        this.camBump = 0;
+        this.camPush = 0;
+        this.fovKick = 0;
+        this.camImp.set(0, 0, 0);
+        this.camImpVel.set(0, 0, 0);
         this.flashAmt = 0;
       }
       if (dt > 0) {
@@ -3551,6 +3496,8 @@ export class Game {
       this.flashEl.style.opacity = String(Math.min(1, this.flashAmt));
     }
     this.grade.uniforms.time.value = this.time;
+    // The 1×1 meter pass only runs when a fresh exposure sample is due, not on every full-resolution frame.
+    this.meter.enabled = !this.aeDead && !this.aePending && this.aeFrames >= 11;
     this.composer.render();
     // the iris runs on world time so it never counts a paused frame, and the flash hold keeps a strobe a strobe
     this.aeHold = Math.max(this.aeHold, this.flashAmt * 0.5 + (this.phase === 'intro' || this.phase === 'matchEnd' ? 0.3 : 0));
@@ -3560,7 +3507,7 @@ export class Game {
       this.aeFrames = 0;
       this.sampleScene();
     }
-    this.grade.uniforms.exposure.value = 1.13 * this.aeGain * this.bright;
+    this.grade.uniforms.exposure.value = 1.0 * this.aeGain * this.bright;
     // ...and the top-end limiter rides along with it: the hotter the frame, the harder the ceiling
     this.grade.uniforms.guard.value = THREE.MathUtils.clamp((this.aeKey / Math.max(0.001, this.bright) - 0.34) / 0.3, 0, 1);
     this.emitHud(false);
@@ -4408,6 +4355,9 @@ export class Game {
   private playerDash(kind: 'fwd' | 'back' | 'side', sign: number) {
     const p = this.player;
     const e = this.enemy;
+    // A second lateral double-tap cannot restart an in-flight shuffle: that used to snap the planted foot back to
+    // the dash's first frame and read as a dragged or twisted leg. Forward/back dodge cancels remain unchanged.
+    if (kind === 'side' && p.dodgeT > 0) return;
     const incomingDeadly = e.state === 'attack' && !!e.move && !e.impacted;
     if (p.state === 'attack' && p.move && (p.impacted || !isOD(p.move.id) || incomingDeadly)) {
       p.state = 'idle';
@@ -4442,7 +4392,8 @@ export class Game {
       evade: { dur: 0.36, speed: 13.5, inv: true, cost: 9, cd: 0.22 },
       fwd: { dur: 0.3, speed: 23.5, inv: false, cost: 6, cd: 0.2 },
       back: { dur: 0.33, speed: 16.8, inv: true, cost: 7, cd: 0.24 },
-      side: { dur: 0.33, speed: 19.8, inv: true, cost: 6, cd: 0.2 },
+      // Shorter lateral travel keeps the body in range of its two planted recovery steps instead of skating across the ring.
+      side: { dur: 0.32, speed: 15.2, inv: true, cost: 6, cd: 0.2 },
     }[kind];
     // the enemy's dodge gets cheaper as its IQ grows (a clever fighter wastes less energy), the player's cost never changes
     const cost = (f.isPlayer ? cfg.cost : cfg.cost / Math.pow(this.iq, 0.25)) * STAM_SCALE;
@@ -4451,7 +4402,10 @@ export class Game {
     f.dodgeDur = cfg.dur;
     f.dodgeTail = 0.24;
     const rageBoost = f.isPlayer && f.rage ? 1.18 : 1;
-    f.dodgeSpeed = cfg.speed * (f.isPlayer ? Math.pow(this.fwMul, 0.6) : 1) * rageBoost; // dashes grow more slowly than walking (3× → 1.9×)
+    // A lateral shuffle is foot-led, not a long skate: higher footwork settings add only 5% per rung (3× → 1.1×),
+    // while forward/back evades keep their existing speed scaling. This keeps the two recovery steps under the hips.
+    const fwBoost = f.isPlayer ? (kind === 'side' ? 1 + (this.fwMul - 1) * 0.05 : Math.pow(this.fwMul, 0.6)) : 1;
+    f.dodgeSpeed = cfg.speed * fwBoost * rageBoost;
     // Player sidesteps/backsteps/evades and 3×+ AI dodges have full invulnerability mid-dodge so deadly punches can always be slipped!
     f.dodgeInv = cfg.inv || (f.isPlayer && kind !== 'fwd') || (!f.isPlayer && this.iq >= 3);
     f.dodgeKind = kind;
@@ -6631,8 +6585,11 @@ export class Game {
     return { a0, a1, dp, tw, ln, rl };
   }
 
-  private heroAnimState(pose: HeroPose, t: number, mx: number, my: number, mirror = false) {
-    const { a0, a1, dp, tw, ln, rl } = this.heroArms(pose, t, mx, my);
+  private heroAnimState(pose: HeroPose, t: number, mx: number, my: number, mirror = false, staticPose = false) {
+    const poseT = staticPose ? 0 : t;
+    const poseMx = staticPose ? 0 : mx;
+    const poseMy = staticPose ? 0 : my;
+    const { a0, a1, dp, tw, ln, rl } = this.heroArms(pose, poseT, poseMx, poseMy);
     // `mirror` is the reflection of the pose across the body's centre line: the arms swap and every lateral
     // channel (shoulder twist, hip roll, the look) flips sign — the VS opponent squares up as the hero's mirror image
     return {
@@ -6652,138 +6609,17 @@ export class Game {
       hitSign: 1,
       hitUp: 0,
       fall: 0,
-      time: t,
-      glow: 0.45 + Math.sin(t * 2.5) * 0.09, // the lobby pose glows, it does not flare — the clash has its own
+      time: poseT,
+      glow: 0.45 + Math.sin(poseT * 2.5) * 0.09, // a steady lobby glow, with no hit flash during matchmaking
       flash: 0,
       tilt: 0,
       dash: 0,
       dashF: 0,
       dashL: 0,
-      lookX: mirror ? -mx : mx,
-      lookY: my,
+      idleBounce: staticPose ? 0 : undefined,
+      lookX: mirror ? -poseMx : poseMx,
+      lookY: poseMy,
     };
-  }
-
-  /**
-   * THE CLASH, as a full animation state. The pose numbers come from `vsClashState` (Game.ts exports it, and the
-   * test harness drives the rig with the very same call) — this method only wraps them with the rest of the body:
-   * the weight going forward, the rear foot re-planting on the release, the face tracking the opponent, the optics
-   * charging through the coil, and the breath. No dash / hit / air channels: the machines are locked in one punch.
-   */
-  private vsClashAnim(side: 'hero' | 'foe'): AnimState {
-    const c = vsClashState(side, this.vsClash, this.vsSeq * 2 + (side === 'foe' ? 1 : 0));
-    const t = this.time;
-    return {
-      arms: c.arms,
-      twist: c.twist,
-      lean: c.lean,
-      lunge: c.lunge,
-      dip: c.dip,
-      roll: c.roll,
-      vf: 0,
-      vl: 0,
-      af: 0,
-      al: 0,
-      yawRate: 0,
-      air: 0,
-      hit: 0,
-      hitSign: 1,
-      hitUp: 0,
-      fall: 0,
-      time: t,
-      glow: c.glow,
-      flash: c.shock * 0.5,
-      tilt: 0,
-      dash: 0,
-      dashF: 0,
-      dashL: 1,
-      lookX: c.lookX,
-      lookY: c.lookY,
-      headYaw: c.head,
-      strike: c.strike,
-      strikePow: c.pow,
-      // the footwork plan is fully scripted by the pose (two settles into the squared stance, the drive into the
-      // throw) — the clash never leaves a step to the balance solver, so the legs never shuffle mid-punch
-      punchFoot: c.punch,
-      punchZ: c.punchZ,
-      punchX: c.punchX,
-      punchDur: c.punchDur,
-      punchSeq: c.punchSeq,
-    };
-  }
-
-  /**
-   * THE SHOW AROUND THE CLASH: the energy that builds on the knuckles through the coil (sparks spitting off the
-   * servos, the crowd starting to whistle), the whoosh as the throw is released, and the grind after the hit — the
-   * two machines pushing against each other, sparks dropping off the contact patch until the shot is covered.
-   */
-  private vsClashFx(dt: number) {
-    const t = this.vsClash;
-    const px = HANGAR_POS.x + VS_CLASH_POINT.x;
-    const pz = HANGAR_POS.z + VS_CLASH_POINT.z;
-    const y = VS_CLASH_POINT.y;
-    const p = new THREE.Vector3(px, y, pz);
-    if (t < VS_CLASH_HIT) {
-      // the build-up: the coil crackles a little, and the last third of a second before the hit it starts spitting
-      const c = vsClashState('hero', t).charge;
-      this.vsSparkT -= dt;
-      if (c > 0.18 && this.vsSparkT <= 0) {
-        this.vsSparkT = 0.16 - c * 0.08;
-        this.fx.spark(p, 2 + Math.round(c * 5), 1.6 + c * 3.2, 0xbfe6ff, new THREE.Vector3(0, 0.3, 1), 0.9, 0.3, 7);
-        if (c > 0.6) this.sfx.crackle(c * 0.5);
-      }
-      // the release: one whoosh + servo surge as the fist leaves the guard
-      if (!this.vsWhoosh && t >= VS_CLASH_REL) {
-        this.vsWhoosh = true;
-        this.sfx.whoosh(0.9);
-        this.sfx.servo();
-      }
-      return;
-    }
-    // the grind: both machines drive into the lock and the knuckles scrape — sparks and a low crackle until covered
-    const g = vsClashState('hero', t).grind;
-    this.vsSparkT -= dt;
-    if (g > 0 && this.vsSparkT <= 0) {
-      this.vsSparkT = 0.09;
-      this.fx.spark(p, 3 + Math.round(g * 7), 2.2 + g * 4.2, 0xffd9a0, new THREE.Vector3(0, 0.25, 1), 1.2, 0.34, 9);
-      if (Math.random() < 0.5) this.sfx.crackle(0.35);
-    }
-    // a thin pressure ring every now and then: the two machines leaning on each other, servos loaded
-    this.vsRingT -= dt;
-    if (g > 0 && this.vsRingT <= 0) {
-      this.vsRingT = 0.22;
-      this.fx.ring(px, pz, 0xffe0a0, 1.6 + g * 1.8, 0.34, y - 0.9);
-    }
-  }
-
-  /**
-   * THE MOMENT THE FISTS MEET: a white core at the contact point 6.5 m up between the two machines, a shock ring,
-   * sparks off both knuckles, the crowd, and the lens — which dives in 22 % and takes the hit through the
-   * spring-damper (the only time the lobby camera is allowed to shake).
-   */
-  private vsClashImpact() {
-    const px = HANGAR_POS.x + VS_CLASH_POINT.x; // just past the middle, where the measured gloves meet
-    const pz = HANGAR_POS.z + VS_CLASH_POINT.z;
-    const y = VS_CLASH_POINT.y;
-    this.fx.flash(new THREE.Vector3(px, y, pz), 3.4, 0xfff4d6, 0.26);
-    this.fx.impactWave(new THREE.Vector3(px, y, pz), new THREE.Vector3(0, 0.15, 1), 0xffd9a0, 3.2, 0.3);
-    this.fx.ring(px, pz, 0xffe0a0, 5.2, 0.42, y);
-    this.fx.spark(new THREE.Vector3(px, y, pz), 26, 7.5, 0xffe6b0, new THREE.Vector3(0, 0.2, 1), 1.5, 0.5, 12);
-    this.sfx.hit(1);
-    this.sfx.crackle(1);
-    this.sfx.roar(0.85, 1.6);
-    this.trauma = 0.92;
-    this.camBump = 0.42;
-    this.camPush = 0.14;
-    this.fovKick = -3.2;
-    this.camImp.set(0, -0.3, 0.22);
-    this.vsShakeT = 1;
-    this.hype = Math.min(1, this.hype + 0.6);
-    // ...and the shock travels through BOTH machines: the head whips on its neck, the shoulders lag, the hips sink,
-    // each on its own spring, so the whole body rings instead of the armour moving as one block.
-    this.menuHero.jolt(1.35, 1);
-    if (this.vsFoe) this.vsFoe.robot.jolt(1.35, -1);
-    this.sfx.pyro(0.25);
   }
 
   private animateMenuHero(dt: number) {
@@ -6791,46 +6627,14 @@ export class Game {
     const t = this.time;
     this.hangar.update(t);
     if (this.vs) {
-      // THE VS STAGE: the hero holds his lobby stare-down the whole way through — search, reveal and lock — and the
-      // opponent is his exact MIRROR IMAGE: the same pose reflected across the centre line (lead hand swapped,
-      // twist flipped, same breath), so the two square up symmetrically either side of the VS mark. Only the lens
-      // punches in on the reveal.
-      const heroPose: HeroPose = this.heroPose;
+      // Reuse the menu's currently selected pose, freeze it to one frame, and mirror it across the centre line.
+      // Opposite root yaws make the player face right and the opponent face left without any idle body bob.
+      const playerPose = this.heroAnimState(this.heroPose, t, 0, 0, false, true);
+      const opponentPose = this.heroAnimState(this.heroPose, t, 0, 0, true, true);
       this.vsPunch = Math.max(0, this.vsPunch - dt * 2.2);
-      void heroPose;
-      // ---- THE FIST CLASH: the lock-in count is the clock, and the fists meet exactly as the "1" lands on screen
-      if (this.vs.stage === 'lock' && this.vsClash < 0) {
-        this.vsLockT += dt;
-        if (this.vsLockT >= VS_CLASH_AT) {
-          this.vsClash = 0;
-          this.vsClashHit = false;
-          this.vsSeq += 1;
-          this.vsWhoosh = false;
-          this.vsSparkT = 0;
-          this.sfx.charge(); // the coil winds up: the turbines spin up under the count
-        }
-      }
-      if (this.vsClash >= 0) {
-        this.vsClash += dt; // ...and it never resets: the fists stay locked until the transition covers the shot
-        if (!this.vsClashHit && this.vsClash >= VS_CLASH_HIT) {
-          this.vsClashHit = true;
-          this.vsClashImpact();
-        }
-      }
-      this.vsShakeT = Math.max(0, this.vsShakeT - dt * 1.6);
-      this.vsKick = this.vsClash >= 0 ? THREE.MathUtils.clamp((this.vsClash - VS_CLASH_HIT + 0.10) / 0.14, 0, 1) : 0;
-      if (this.vsClash >= 0) {
-        // THE CLASH OWNS THE BODY: both machines throw their right hand on the clashing beat (vsClashState), and the
-        // second team Titan — who is not in the duel — keeps his lobby stare-down.
-        this.menuHero.animate(this.vsClashAnim('hero'), dt);
-        if (this.vsFoe) this.vsFoe.robot.animate(this.vsClashAnim('foe'), dt);
-        if (this.vsFoe2) this.vsFoe2.robot.animate(this.heroAnimState(this.heroPose, t + 0.6, 0, 0, true), dt);
-        this.vsClashFx(dt);
-        return;
-      }
-      if (this.vsFoe) this.vsFoe.robot.animate(this.heroAnimState(heroPose, t, 0, 0, true), dt);
-      if (this.vsFoe2) this.vsFoe2.robot.animate(this.heroAnimState(heroPose, t + 0.6, 0, 0, true), dt);
-      this.menuHero.animate(this.heroAnimState(heroPose, t, 0, 0), dt);
+      if (this.vsFoe) this.vsFoe.robot.animate(opponentPose, dt);
+      if (this.vsFoe2) this.vsFoe2.robot.animate(opponentPose, dt);
+      this.menuHero.animate(playerPose, dt);
       return;
     }
     this.heroYaw += (this.heroYawTarget - this.heroYaw) * Math.min(1, 10 * dt);
@@ -7685,7 +7489,7 @@ export class Game {
 
       if (this.menuCamMode !== 'arena') {
         // THE HANGAR SHOWCASE — zero shake. 'hero' = the lobby: waist up, the machine filling the frame;
-        // 'full' = the garage: head to boots; the VS stage: both Titans chest-up, facing the lens.
+        // 'full' = the garage: head to boots; the VS stage: both Titans chest-up, facing inward over the menu pose.
         this.trauma = 0;
         this.camBump = 0;
         this.camPush = 0;
@@ -7693,35 +7497,23 @@ export class Game {
         this.fovKick = 0;
         const distScale = aspect < 0.75 ? Math.min(1.28, 0.75 / aspect) : 1.0;
         if (this.vs) {
-          const sep = 2.75;
+          const sep = VS_STAGE_SEP;
           const fit = aspect < 1.5 ? 1.5 / Math.max(0.6, aspect) : 1;
           const punch = this.vsPunch * this.vsPunch;
-          // THE CLASH CAMERA: breathe back a hair as the machines load up, then creep in with them through the
-          // coil, DIVE on the fists as they meet — and lift the look onto the contact patch, which is exactly where
-          // the two knuckles touch (VS_CLASH_POINT is measured on the rig, not guessed).
-          const wind = this.vsClash >= 0 ? THREE.MathUtils.clamp(this.vsClash / VS_CLASH_HIT, 0, 1) : 0;
-          const build = wind * wind * (3 - 2 * wind); // ease-in-out: the lens creeps, it does not slide
-          const dive = this.vsKick;
-          const clashZoom = 1 - 0.035 * Math.sin(Math.PI * build) + 0.10 * build * build - 0.26 * dive;
-          const clashLift = dive * (VS_CLASH_POINT.y - 5.45) + build * 0.20; // the look rises onto the contact patch
-          const clashLookZ = build * 0.9 + dive * 0.8; // ...and forward onto the gloves, so the fists hold the middle
-          const camDist = 9.6 * fit * (1 - punch * 0.07) * clashZoom;
-          // the clash turns the machines to face each other and walks them into each other (see VS_CLASH_SQUARE /
-          // VS_CLASH_STEP) — the marks close up, the chests square at the opponent, and the fists meet between them
-          const turnH = this.vsClash >= 0 ? vsClashState('hero', this.vsClash).yaw : 0;
-          const turnF = this.vsClash >= 0 ? vsClashState('foe', this.vsClash).yaw : 0;
+          // Hold a steady two-fighter portrait through the shorter 3–2–1 countdown; the ring transition handles the cut.
+          const camDist = 9.6 * fit * (1 - punch * 0.07);
           this.menuHero.root.position.set(heroX - sep, 0, heroZ);
-          this.menuHero.root.rotation.y = 0.42 + turnH;
+          this.menuHero.root.rotation.y = VS_PLAYER_YAW;
           const foes = [this.vsFoe, this.vsFoe2];
           foes.forEach((f, i) => {
             if (!f) return;
             const second = i === 1;
             f.robot.root.position.set(heroX + sep + (second ? 2.4 : 0), 0, heroZ - (second ? 2.6 : 0));
-            f.robot.root.rotation.y = -0.42 - (second ? 0.15 : 0) - (second ? 0 : turnF);
+            f.robot.root.rotation.y = VS_OPPONENT_YAW - (second ? 0.15 : 0);
             f.robot.root.visible = this.vs!.stage !== 'search';
           });
-          tp = new THREE.Vector3(heroX, 5.55 - punch * 0.12 + clashLift, heroZ + camDist);
-          tl = new THREE.Vector3(heroX + VS_CLASH_POINT.x * build, 5.45 + clashLift, heroZ + clashLookZ);
+          tp = new THREE.Vector3(heroX, 5.55 - punch * 0.12, heroZ + camDist);
+          tl = new THREE.Vector3(heroX, 5.45, heroZ);
         } else if (this.menuCamMode === 'full') {
           const camDist = 13.0 * distScale;
           tp = new THREE.Vector3(heroX, 3.58, heroZ + camDist);
@@ -7955,7 +7747,7 @@ export class Game {
     }
 
     cam.position.copy(this.camPos);
-    if (this.phase !== 'menu' || this.menuCamMode === 'arena' || this.vsShakeT > 0.002) {
+    if (this.phase !== 'menu' || this.menuCamMode === 'arena') {
       // 3D Critically-Damped Spring-Damper for Heavy Robot Impact Recoil (100% smooth, ZERO random jitter!)
       const stepDt = Math.min(0.033, raw);
       const springK = 185;
@@ -8019,13 +7811,13 @@ export class Game {
       // the whole shot goes milky. Up here the pass is tightened — threshold well above the plating, strength and
       // radius down — so ONLY what is genuinely emissive (optics, core, the light bars) carries a halo, and the
       // machine reads as a machine. Everywhere else the in-match values below are the ones that matter.
-      this.bloom.threshold = 1.5;
-      this.bloom.strength = 0.22;
-      this.bloom.radius = 0.5;
+      this.bloom.threshold = 1.65;
+      this.bloom.strength = 0.14;
+      this.bloom.radius = 0.38;
     } else {
-      this.bloom.threshold = 1.16;
-      this.bloom.strength = Math.min(0.72, 0.4 + this.trauma * 0.14 + this.flashAmt * 0.18);
-      this.bloom.radius = 0.6;
+      this.bloom.threshold = 1.65;
+      this.bloom.strength = Math.min(0.34, 0.16 + this.trauma * 0.08 + this.flashAmt * 0.08);
+      this.bloom.radius = 0.38;
     }
   }
 

@@ -320,14 +320,13 @@ export function buildCrowd(scene: THREE.Scene, spots: Spot[], phoneCount: number
     return u * u * (3 - 2 * u);
   };
   const H = 0.0001; // "hidden" scale
-  // `cohort` (0/1/undefined): poses only every other person — called with alternating cohorts on consecutive
-  // frames the whole crowd still moves at 30 Hz, but the CPU cost is spread evenly instead of spiking every
-  // second frame
-  const update = (t: number, hype: number, cohort?: number) => {
+  // Split animation into cohorts so the doubled audience does not double per-frame CPU work.
+  // Arena updates three cohorts in rotation (20 Hz per person at 60 FPS); tests can still update everyone at once.
+  const update = (t: number, hype: number, cohort?: number, cohortCount = 2) => {
     const amp = 0.025 + hype * 0.2; // small, slow hops
     const spdMul = 1 + hype * 0.22;
-    const i0 = cohort === undefined ? 0 : cohort;
-    const di = cohort === undefined ? 1 : 2;
+    const di = cohort === undefined ? 1 : Math.max(1, Math.floor(cohortCount));
+    const i0 = cohort === undefined ? 0 : ((Math.floor(cohort) % di) + di) % di;
     for (let i = i0; i < N; i += di) {
       const p = people[i];
       const cheer = sstep(p.thr, p.thr + 0.3, hype * 1.15);

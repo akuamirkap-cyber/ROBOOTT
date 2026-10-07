@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import zlib from 'zlib';
 import fs from 'fs';
 import { Robot } from './.__robot.mjs';
-import { GUARD, VS_CLASH_HIT, vsClashState } from './.__game.mjs';
+import { VS_CLASH_HIT, VS_CLASH_POINT, VS_CLASH_SEP, vsClashState } from './.__game.mjs';
 
 const D = 1 / 60;
 const STYLE = { variant: 'atom', main: 0x8a8f98, secondary: 0x3a3f47, accent: 0x1e9bff, glow: 0x63e0ff };
@@ -12,8 +12,8 @@ const W = 960, H = 540;
 
 const t = parseFloat(process.argv[2] ?? VS_CLASH_HIT);
 const out = process.argv[3] ?? 'clashviz.png';
-const heroSep = parseFloat(process.argv[4] ?? 2.75);
-const foeSep = parseFloat(process.argv[5] ?? 2.75);
+const heroSep = parseFloat(process.argv[4] ?? VS_CLASH_SEP);
+const foeSep = parseFloat(process.argv[5] ?? VS_CLASH_SEP);
 const scaleF = parseFloat(process.argv[6] ?? 1.0);
 const YAW = 0.42, SETTLE = 110;
 
@@ -68,7 +68,6 @@ const foeR = runRobot('foe', t);
 
 // ---- camera: the game's VS camera at clash time t
 function camAt(t) {
-  const VS_CLASH_POINT = { x: 1.1, y: 5.38, z: 1.02 };
   const wind = THREE.MathUtils.clamp(t / VS_CLASH_HIT, 0, 1);
   const build = wind * wind * (3 - 2 * wind);
   const dive = t >= VS_CLASH_HIT ? 1 : 0;
@@ -134,16 +133,17 @@ function plotBone(obj, col, r = 5) {
 }
 plotRobot(heroR, [60, 90, 120]);
 plotRobot(foeR, [120, 90, 80]);
-// markers: chests (white ring), heads (dim), fists (bright cyan hero / orange foe)
-for (const [r, fistCol] of [[heroR, [0, 255, 255]], [foeR, [255, 160, 40]]]) {
+// markers: chests (white ring), heads (dim), inner clash gloves (bright cyan hero / orange foe)
+for (const [side, r, fistCol] of [['hero', heroR, [0, 255, 255]], ['foe', foeR, [255, 160, 40]]]) {
   r.chest.getWorldPosition(pv); const cp = pv.clone().project(cam);
   dot(Math.round(((cp.x + 1) / 2) * W), Math.round(((1 - cp.y) / 2) * H), 8, [200, 200, 200]);
-  plotBone(r.fists[0], fistCol, 4);
-  plotBone(r.fists[1], fistCol, 7);
+  const arm = vsClashState(side, t).arm;
+  plotBone(r.fists[arm], fistCol, 7);
+  plotBone(r.fists[1 - arm], [120, 120, 120], 4);
 }
 // contact patch marker (VS_CLASH_POINT)
 {
-  pv.set(1.1, 5.38, 1.02).project(cam);
+  pv.set(VS_CLASH_POINT.x, VS_CLASH_POINT.y, VS_CLASH_POINT.z).project(cam);
   dot(Math.round(((pv.x + 1) / 2) * W), Math.round(((1 - pv.y) / 2) * H), 6, [255, 0, 255]);
   pv.set(0, 5.4, 0).project(cam); // stage centre line at glove height
   dot(Math.round(((pv.x + 1) / 2) * W), Math.round(((1 - pv.y) / 2) * H), 3, [0, 255, 0]);
@@ -179,6 +179,8 @@ fs.writeFileSync(out, png);
 console.log(`wrote ${out} (t=${t}, heroSep=${heroSep}, foeSep=${foeSep}, foeScale=${scaleF})`);
 // also print measured glove facts
 const gc = (r, i) => { const b = new THREE.Box3(); r.fists[i].updateWorldMatrix(true, true); r.fists[i].traverse((o) => { if (o.isMesh) b.expandByObject(o); }); return b.getCenter(new THREE.Vector3()); };
-const h1 = gc(heroR, 1), f1 = gc(foeR, 1), h0 = gc(heroR, 0), f0 = gc(foeR, 0);
-console.log(`hero R fist: ${h1.x.toFixed(2)},${h1.y.toFixed(2)},${h1.z.toFixed(2)} | foe R fist: ${f1.x.toFixed(2)},${f1.y.toFixed(2)},${f1.z.toFixed(2)} | center gap ${h1.distanceTo(f1).toFixed(2)} m`);
+const heroArm = vsClashState('hero', t).arm;
+const foeArm = vsClashState('foe', t).arm;
+const h1 = gc(heroR, heroArm), f1 = gc(foeR, foeArm);
+console.log(`player right hand ${heroArm}: ${h1.x.toFixed(2)},${h1.y.toFixed(2)},${h1.z.toFixed(2)} | opponent right hand ${foeArm}: ${f1.x.toFixed(2)},${f1.y.toFixed(2)},${f1.z.toFixed(2)} | center gap ${h1.distanceTo(f1).toFixed(2)} m`);
 console.log(`hero chest: ${heroR.chest.getWorldPosition(new THREE.Vector3()).toArray().map((v) => v.toFixed(2))} | foe chest: ${foeR.chest.getWorldPosition(new THREE.Vector3()).toArray().map((v) => v.toFixed(2))}`);

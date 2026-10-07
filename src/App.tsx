@@ -278,7 +278,7 @@ export default function App() {
           ultra={ultra}
           iq={iqNow}
           game={game}
-          onClash={() => playTrans(transId)}
+          onTransition={() => playTrans(transId)}
           onReady={() => launch(series)}
           onCancel={() => {
             if (series.mode === 'tournament') setStage('bracket');
@@ -401,7 +401,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ---------- the ring transition: the fist clash on the VS screen hands over to the ring walk ---------- */}
+      {/* ---------- the ring transition: the VS countdown hands over to the ring walk ---------- */}
       {trans && transMeta && (
         <div
           key={trans.run}

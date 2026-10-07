@@ -1,11 +1,8 @@
 import * as THREE from 'three';
 
 /**
- * THE BROADCAST LIGHT RIG — proper stadium spotlights, the way a televised title fight is lit: eight warm-white
- * followspots on the inner truss pouring soft volumetric cones down onto the canvas (haze in the air, a pool of
- * light where each one lands, a glaring lens at the lamp), and four coloured moving heads on the outer rig that
- * sweep slowly and surge with the crowd. The cones are a view-dependent volumetric shader (soft silhouette,
- * fading along the throw) — not flat lines.
+ * THE BROADCAST LIGHT RIG — eight restrained warm followspots, eight coloured heads and two blue key beams shape the arena with
+ * view-dependent volumetric cones (soft silhouettes fading along the throw), not flat lines or an overbright wash.
  */
 export interface SpotRig {
   update(t: number, dt: number, hype: number, focus: THREE.Vector3): void;
@@ -138,16 +135,16 @@ export function buildSpotRig(scene: THREE.Scene): SpotRig {
     barn.rotation.x = Math.PI / 2;
     barn.position.z = 0.42;
     g.add(barn);
-    const lens = new THREE.MeshBasicMaterial({ color: col.clone().multiplyScalar(2.1) });
-    const lensMesh = new THREE.Mesh(new THREE.CircleGeometry(0.46, 20), lens);
+    const lens = new THREE.MeshBasicMaterial({ color: col.clone().multiplyScalar(1.45) });
+    const lensMesh = new THREE.Mesh(new THREE.CircleGeometry(0.46, 16), lens);
     lensMesh.position.z = 0.56;
     g.add(lensMesh);
-    const gl = new THREE.Sprite(new THREE.SpriteMaterial({ map: glare, color: col, transparent: true, opacity: 0.72, blending: THREE.AdditiveBlending, depthWrite: false }));
-    gl.scale.setScalar(5.6);
+    const gl = new THREE.Sprite(new THREE.SpriteMaterial({ map: glare, color: col, transparent: true, opacity: 0.24, blending: THREE.AdditiveBlending, depthWrite: false }));
+    gl.scale.setScalar(3.5);
     gl.position.z = 0.7;
     g.add(gl);
     // the volumetric cone: apex at the lens, opening to `spread` at the far end
-    const geo = new THREE.CylinderGeometry(0.42, spread, len, 36, 1, true);
+    const geo = new THREE.CylinderGeometry(0.42, spread, len, 20, 1, true);
     geo.translate(0, -len / 2, 0);
     geo.rotateX(-Math.PI / 2);
     const cone = new THREE.ShaderMaterial({
@@ -172,8 +169,8 @@ export function buildSpotRig(scene: THREE.Scene): SpotRig {
     // EVERY beam lands somewhere: the coloured moving beams carry their own pool of light on the canvas, dragged
     // where the head points each frame — that is what makes the show read as LIGHT, not just glowing cones in the air
     const poolMesh = new THREE.Mesh(
-      new THREE.CircleGeometry(spread * 1.35, 32),
-      new THREE.MeshBasicMaterial({ map: pool, color: col, transparent: true, opacity: moving ? 0.16 : 0.34, blending: THREE.AdditiveBlending, depthWrite: false }),
+      new THREE.CircleGeometry(spread * 1.35, 24),
+      new THREE.MeshBasicMaterial({ map: pool, color: col, transparent: true, opacity: moving ? 0.055 : 0.12, blending: THREE.AdditiveBlending, depthWrite: false }),
     );
     poolMesh.rotation.x = -Math.PI / 2;
     poolMesh.position.set(target.x, target.y + 0.035, target.z);
@@ -184,34 +181,36 @@ export function buildSpotRig(scene: THREE.Scene): SpotRig {
     return lamp;
   };
 
-  // eight warm followspots on the inner truss, each covering its own patch of the canvas
+  // Eight warm followspots on the inner truss; restrained pools overlap softly without turning the canvas white.
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
     const pos = new THREE.Vector3(Math.cos(a) * 18, 26.4, Math.sin(a) * 18);
     const tr = 4.6;
     const target = new THREE.Vector3(Math.cos(a) * tr, 0, Math.sin(a) * tr);
     const warm = i % 2 === 0 ? 0xfff1dc : 0xf4f6ff; // alternating warm / daylight heads, like a real rig
-    mkLamp(pos, target, warm, 34, 5.0, 0.5, false, i * 0.7);
+    mkLamp(pos, target, warm, 34, 5.0, 0.22, false, i * 0.7);
   }
-  // TEN coloured moving heads on the outer rig: sweeps through the haze in the classic rig palette (blue, red,
-  // magenta, cyan, amber, violet, back round again) — the colour that makes a stadium light show read as a show.
-  // Every beam drags its own pool of colour across the canvas, so the ring ITSELF is part of the show.
-  const HEAD_COLORS = [0x3f86ff, 0xff3a46, 0xff4dd2, 0x2fe6ff, 0xffb03a, 0x9a5bff, 0x3fffa6, 0xff7a3a, 0x5fc8ff, 0xff3a8a];
+  // Eight coloured moving heads sweep through the haze; fewer layered beams keep the arena lively without excess overdraw.
+  const HEAD_COLORS = [0x3f86ff, 0xff3a46, 0xff4dd2, 0x2fe6ff, 0xffb03a, 0x9a5bff, 0x3fffa6, 0xff7a3a];
   for (let i = 0; i < HEAD_COLORS.length; i++) {
     const a = (i / HEAD_COLORS.length) * Math.PI * 2 + Math.PI / 4 + 0.2;
     const pos = new THREE.Vector3(Math.cos(a) * 40, 33.0 + (i % 2) * 2.2, Math.sin(a) * 40);
-    mkLamp(pos, new THREE.Vector3(0, 0, 0), HEAD_COLORS[i], 58, 4.0, 0.3, true, i * 1.3);
+    mkLamp(pos, new THREE.Vector3(0, 0, 0), HEAD_COLORS[i], 58, 4.0, 0.11, true, i * 1.3);
   }
 
-  // THE HERO FOLLOWSPOTS: two big warm-white followspots on the inner truss, one locked on each fighter, the way the
-  // spot operators follow the boxers from the walk-in to the final bell. They are REAL lights (a hard pool of light
-  // travelling with the fighter, a hot highlight on the steel) with a volumetric cone and a glaring lens above.
+  // Two deliberate blue shafts cut diagonally across the ring like a televised main-event light cue.
+  // Their restrained intensity adds colour and depth without bleaching the canvas or the steel.
+  mkLamp(new THREE.Vector3(-28.3, 34, -28.3), new THREE.Vector3(3, 0, 2), 0x2878ff, 60, 7.2, 0.23, false, 0.7);
+  mkLamp(new THREE.Vector3(28.3, 34, -28.3), new THREE.Vector3(-3, 0, -2), 0x2878ff, 60, 7.2, 0.23, false, 2.0);
+
+  // THE HERO FOLLOWSPOTS: two warm-white followspots on the inner truss, one tracking each fighter. They are real
+  // lights with restrained pools and a soft cone, so the chassis stays legible instead of getting a hot white wash.
   for (let i = 0; i < 2; i++) {
     const pos = i === 0 ? new THREE.Vector3(-15.5, 26.8, -9.5) : new THREE.Vector3(15.5, 26.8, 9.5);
     const foot = i === 0 ? new THREE.Vector3(-3, 0, 0) : new THREE.Vector3(3, 0, 0);
-    const lamp = mkLamp(pos, foot.clone().setY(3.2), 0xfff4e6, 40, 4.0, 0.48, false, 2.1 + i);
+    const lamp = mkLamp(pos, foot.clone().setY(3.2), 0xfff4e6, 40, 4.0, 0.18, false, 2.1 + i);
     lamp.track = i;
-    const light = new THREE.SpotLight(0xfff4e6, 54, 100, 0.32, 0.5, 0.95);
+    const light = new THREE.SpotLight(0xfff4e6, 18, 100, 0.32, 0.5, 0.95);
     light.position.copy(pos);
     light.target.position.copy(foot).setY(3.2);
     scene.add(light, light.target);
@@ -235,11 +234,11 @@ export function buildSpotRig(scene: THREE.Scene): SpotRig {
         const c = trackCur[i];
         tmp.set(c.x, c.y + 3.2, c.z);
         l.g.lookAt(tmp);
-        l.cone.uniforms.intensity.value = l.base * (0.9 + hype * 0.25 + st * 0.9) * (trackOn[i] ? 1 : 0.35);
+        l.cone.uniforms.intensity.value = l.base * (0.9 + hype * 0.12 + st * 0.3) * (trackOn[i] ? 1 : 0.35);
         if (l.pool) l.pool.position.set(c.x, c.y + 0.04, c.z);
         if (l.light) {
           l.light.target.position.copy(tmp);
-          l.light.intensity = (trackOn[i] ? 54 : 0) + hype * 10 + st * 46;
+          l.light.intensity = (trackOn[i] ? 18 : 0) + hype * 3 + st * 8;
         }
       } else if (l.moving) {
         // a figure-of-eight sweep round the action — the pool of colour it carries slides across the canvas with it
@@ -249,19 +248,19 @@ export function buildSpotRig(scene: THREE.Scene): SpotRig {
         l.g.lookAt(tmp);
         if (l.pool) {
           l.pool.position.set(tmp.x, tmp.y + 0.04, tmp.z);
-          (l.pool.material as THREE.MeshBasicMaterial).opacity = 0.10 + hype * 0.10 + st * 0.12;
+          (l.pool.material as THREE.MeshBasicMaterial).opacity = 0.035 + hype * 0.04 + st * 0.04;
         }
-        l.cone.uniforms.intensity.value = l.base * (0.85 + hype * 0.8 + st * 1.4) + (Math.sin(t * 2.3 + l.ph) * 0.5 + 0.5) * 0.05;
+        l.cone.uniforms.intensity.value = l.base * (0.85 + hype * 0.3 + st * 0.45) + (Math.sin(t * 2.3 + l.ph) * 0.5 + 0.5) * 0.012;
         // on an impact the colour heads flick to white for a beat
-        l.cone.uniforms.color.value.copy(l.col).lerp(WHITE, st * 0.8);
-        (l.pool!.material as THREE.MeshBasicMaterial).color.copy(l.col).lerp(WHITE, st * 0.7);
+        l.cone.uniforms.color.value.copy(l.col).lerp(WHITE, st * 0.55);
+        (l.pool!.material as THREE.MeshBasicMaterial).color.copy(l.col).lerp(WHITE, st * 0.45);
       } else {
         // the followspots hold their marks; only a faint breath of the haze moves
         l.cone.uniforms.intensity.value = l.base * (0.92 + Math.sin(t * 0.9 + l.ph) * 0.06 + hype * 0.18 + st * 0.7);
       }
-      const k = 1.55 + hype * 0.5 + Math.sin(t * 3.7 + l.ph) * 0.09 + st * 1.6;
+      const k = 0.96 + hype * 0.16 + Math.sin(t * 3.7 + l.ph) * 0.03 + st * 0.35;
       l.lens.color.copy(l.col).multiplyScalar(k);
-      (l.glare.material as THREE.SpriteMaterial).opacity = Math.min(0.92, 0.62 + hype * 0.2 + st * 0.4);
+      (l.glare.material as THREE.SpriteMaterial).opacity = Math.min(0.38, 0.2 + hype * 0.08 + st * 0.1);
     }
   };
 

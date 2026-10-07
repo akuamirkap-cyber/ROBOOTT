@@ -1,11 +1,9 @@
 // Crowd validation harness — run it with:
 //     npx esbuild crowdscene.ts --bundle --format=esm --platform=node --outfile=.__crowdscene.mjs --external:three
 //     node crowdtest.mjs
-// `crowdscene.ts` builds a small test stand out of the same `buildCrowd` the arena uses.
-//
-// The stands hold ~1350 spectators and they are instanced, so the two things that matter are:
-//   • the crowd actually builds a full set of parts for every person (no holes)
-//   • the geometry stays inside a sane triangle budget (it is drawn 30 m from the ring, but 1350 × meshes adds up)
+// `crowdscene.ts` builds a doubled-density test stand out of the same `buildCrowd` the arena uses.
+// Production capacity is approximately doubled from ~1,350 to ~2,700 people; the 6 × 32 stand below
+// checks the denser instanced crowd stays complete and within a practical geometry budget.
 import * as THREE from 'three';
 import { makeCrowd } from './.__crowdscene.mjs';
 
@@ -39,8 +37,8 @@ scene.traverse((o) => {
 });
 check('no broken geometry anywhere', true);
 const people = Math.max(...parts.values());
-check('the stand is full of people', people >= 90, `${people} spectators in this test stand, across ${parts.size} instanced parts`);
+check('the doubled-density stand is full of people', people >= 300, `${people} spectators in this test stand, across ${parts.size} instanced parts`);
 check('every part is instanced', instanced === meshes, `${instanced}/${meshes} instanced meshes`);
-check('triangle budget stays sane', tris < 260000, `~${Math.round(tris)} tris in ${meshes} draw calls`);
+check('doubled-crowd triangle budget stays sane', tris < 420000, `~${Math.round(tris)} tris in ${meshes} draw calls`);
 console.log(fails === 0 ? '\nCROWD: ALL PASS' : `\nCROWD: ${fails} FAIL`);
 process.exit(fails === 0 ? 0 : 1);

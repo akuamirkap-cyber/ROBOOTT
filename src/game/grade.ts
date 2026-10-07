@@ -22,14 +22,14 @@ export const GradeShader = {
     time: { value: 0 },
     res: { value: new THREE.Vector2(1920, 1080) },
     vignette: { value: 0.0 }, // no black vignette — the frame keeps its colour corner to corner (design request)
-    sat: { value: 1.26 },
-    grain: { value: 0.012 },
-    contrast: { value: 0.06 },
-    exposure: { value: 1.13 }, // written every frame by the game's auto-exposure (1.13 × the iris gain)
+    sat: { value: 1.24 },
+    grain: { value: 0.008 },
+    contrast: { value: 0.18 },
+    exposure: { value: 1.0 }, // written every frame by the game's auto-exposure (base exposure × the iris gain)
     guard: { value: 1.0 }, // hard anti-blowout limiter, engaged by the auto-exposure when the frame runs hot
     lift: { value: 0.028 }, // the shadow floor: the neutral tone map's toe is deep, this keeps it off the floor
     tones: { value: 1.0 },
-    ca: { value: 0.002 },
+    ca: { value: 0.001 },
     aa: { value: 1.0 },
     warmth: { value: 0.5 },
   },
@@ -131,9 +131,9 @@ export const GradeShader = {
       // a whisper of extra punch in the darks so the black chassis keeps its colour in the shadow side
       col = vec3( l ) + ( col - vec3( l ) ) * mix( 1.16, 1.0, smoothstep( 0.05, 0.5, l ) );
 
-      // ---------- 5 · highlight desaturation (blown lamps stay white-hot instead of pink) ----------
+      // ---------- 5 · highlight desaturation (lamp cores stay white; lit armour keeps its colour) ----------
       l = dot( col, LUMA );
-      col = mix( col, vec3( l ), smoothstep( 1.15, 3.4, l ) * 0.6 );
+      col = mix( col, vec3( l ), smoothstep( 1.35, 3.6, l ) * 0.42 );
 
       // ---------- 6 · the broadcast split-tone: cooler toe, warmer top ----------
       l = dot( col, LUMA );

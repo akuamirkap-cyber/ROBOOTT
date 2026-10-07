@@ -1,6 +1,13 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { buildJudges } from './judges';
+import {
+  ROWS_PER_TIER,
+  STAND_ROW_SPACING,
+  STAND_TIERS,
+  standRowHeight,
+  standTierInnerRadius,
+} from './stadiumLayout';
 
 type Upd = (t: number, dt: number, hype: number, focus: THREE.Vector3) => void;
 
@@ -269,10 +276,10 @@ export function buildProps(scene: THREE.Scene): Props {
   const rowBright = neon(0x9fb8e8, 0.28);
   const rowDim = neon(0x4a68b0, 0.12);
   const rowHot = neon(0xd8d0c8, 0.22);
-  for (let k = 0; k < 4; k++) {
-    for (let r = 0; r < 3; r++) {
-      const R = 32 + k * 6.5 + r * 2.0 + 0.04;
-      const y = 0.4 + (k * 3 + r + 1) * 0.85 + 0.03;
+  for (let k = 0; k < STAND_TIERS; k++) {
+    for (let r = 0; r < ROWS_PER_TIER; r++) {
+      const R = standTierInnerRadius(k) + r * STAND_ROW_SPACING + 0.04;
+      const y = standRowHeight(k, r) + 0.03;
       const ring = new THREE.Mesh(new THREE.TorusGeometry(R, 0.045, 5, 160), r === 0 ? (k % 2 ? rowHot : rowBright) : rowDim);
       ring.rotation.x = Math.PI / 2;
       ring.position.y = y;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { OPPONENTS, PLAYER_NAME, ULTRA_COLOR, smartDef, ultraDef, type Game, type OpponentDef } from '../game/Game';
+import { OPPONENTS, PLAYER_NAME, ULTRA_COLOR, VS_LOCK_BEAT, VS_LOCK_BEATS, VS_LOCK_DUR, smartDef, ultraDef, type Game, type OpponentDef } from '../game/Game';
 import { ACCOUNT_NAME, ACCOUNT_REGION, TOURNEY_STAGES, levelOf, modeOf, tierOf, type Profile, type Series } from '../game/progress';
 import { Emblem } from './Emblem';
 
@@ -58,7 +58,7 @@ export function Matchmaking({
   iq,
   game,
   onReady,
-  onClash,
+  onTransition,
   onCancel,
 }: {
   series: Series;
@@ -68,8 +68,8 @@ export function Matchmaking({
   iq: number;
   game: Game | null;
   onReady: () => void;
-  /** fired the instant the two machines clash fists (the last second of the lock-in count) — see Game's VS_CLASH */
-  onClash?: () => void;
+  /** begins the selected ring transition as the final countdown number appears */
+  onTransition?: () => void;
   onCancel: () => void;
 }) {
   const meta = modeOf(series.mode);
@@ -86,8 +86,14 @@ export function Matchmaking({
   const me: Stats = useMemo(() => ({ power: 0.62 + lv.level * 0.006, speed: 0.72 + lv.level * 0.004, armor: 0.58 + lv.level * 0.006, iq: 0.55 + Math.min(0.4, profile.wins * 0.01) }), [lv.level, profile.wins]);
   const foe = statsOf(opp, iq);
 
-  const searchFor = useMemo(() => (isTourney || isPlay ? 1.6 : 2.6 + Math.random() * 1.4), [isTourney, isPlay]);
+  const searchFor = useMemo(() => (isTourney || isPlay ? 1.2 : 1.8 + Math.random() * 0.8), [isTourney, isPlay]);
   const [phase, setPhase] = useState<Phase>('search');
+  const phaseAt = useRef(performance.now());
+  const enterPhase = (next: Phase) => {
+    phaseAt.current = performance.now();
+    if (next === 'lock') setCount(VS_LOCK_BEATS);
+    setPhase(next);
+  };
   const [t, setT] = useState(0);
   const [pt, setPt] = useState(0);
   const [count, setCount] = useState(3);
@@ -96,8 +102,8 @@ export function Matchmaking({
   const ping = useMemo(() => 18 + Math.floor(Math.random() * 20), []);
   const readyRef = useRef(onReady);
   readyRef.current = onReady;
-  const clashRef = useRef(onClash);
-  clashRef.current = onClash;
+  const transitionRef = useRef(onTransition);
+  transitionRef.current = onTransition;
   const found = phase !== 'search';
 
   // ---- the 3D stage: both Titans in the hangar, the opponent revealed on 'found'
@@ -116,39 +122,50 @@ export function Matchmaking({
   }, [game]);
 
   const t0 = useRef(performance.now());
-  const phaseAt = useRef(performance.now());
   useEffect(() => {
-    phaseAt.current = performance.now();
     let last = -1;
+    let transitionSent = false;
+    let readySent = false;
     const id = window.setInterval(() => {
       const now = performance.now();
-      setT((now - t0.current) / 1000);
-      setScan((v) => v + 1);
-      const ph = (now - phaseAt.current) / 1000;
+      if (phase === 'search') {
+        setT((now - t0.current) / 1000);
+        setScan((v) => v + 1);
+      }
+      const ph = Math.max(0, (now - phaseAt.current) / 1000);
       setPt(ph);
       if (phase === 'search' && ph >= searchFor) {
-        setPhase('found');
+        enterPhase('found');
         game?.uiCue('found');
-      } else if (phase === 'found' && ph >= 3.8) {
-        setPhase('lock');
+      } else if (phase === 'found' && ph >= 2.4) {
+        enterPhase('lock');
       } else if (phase === 'lock') {
-        // the lock-in count runs FAST: three beats of 0.68 s (the "1" lands at 1.36 s — the clash meets it mid-air)
-        const c = 3 - Math.floor(ph / 0.68);
+        // A brisk 3–2–1 plays over one clock; the final number starts the ring transition, not a fist clash.
+        const c = Math.max(0, VS_LOCK_BEATS - Math.floor(ph / VS_LOCK_BEAT));
         if (c !== last) {
           last = c;
           if (c > 0) {
             setCount(c);
             game?.uiCue('lock');
-            // the "1": the two machines throw their fists on this beat — the ring transition rides on it
-            if (c === 1) clashRef.current?.();
-          } else {
+            if (c === 1 && !transitionSent) {
+              transitionSent = true;
+              transitionRef.current?.();
+            }
+          } else if (!readySent) {
+            readySent = true;
             game?.uiCue('go');
             window.clearInterval(id);
             readyRef.current();
           }
         }
+        if (ph >= VS_LOCK_DUR && !readySent) {
+          readySent = true;
+          game?.uiCue('go');
+          window.clearInterval(id);
+          readyRef.current();
+        }
       }
-    }, 60);
+    }, phase === 'lock' ? 16 : 60);
     return () => window.clearInterval(id);
   }, [phase, searchFor, game]);
 
@@ -157,9 +174,9 @@ export function Matchmaking({
       if (e.code === 'Enter' || e.code === 'Space') {
         e.preventDefault();
         if (phase === 'search') {
-          setPhase('found');
+          enterPhase('found');
           game?.uiCue('found');
-        } else if (phase === 'found') setPhase('lock');
+        } else if (phase === 'found') enterPhase('lock');
       } else if (e.code === 'Escape' && phase === 'search') onCancel();
     };
     window.addEventListener('keydown', onKey);
@@ -169,7 +186,7 @@ export function Matchmaking({
   const stage = isTourney ? TOURNEY_STAGES[Math.min(series.step, TOURNEY_STAGES.length - 1)] : isTeam ? '2V2 TAG TEAM' : isPlay ? 'BEST OF 3' : `${tier.name} ${['', 'I', 'II', 'III'][division]}`;
   const foeName = found ? opp.name : SCAN_NAMES[scan % SCAN_NAMES.length];
   const prog = Math.min(1, t / searchFor);
-  const lockFrac = phase === 'lock' ? 1 - ((pt % 0.68) / 0.68) : 0;
+  const lockFrac = phase === 'lock' ? 1 - ((pt % VS_LOCK_BEAT) / VS_LOCK_BEAT) : 0;
   const oppCol = ultra ? ULTRA_COLOR : opp.color;
   const myTop = topStats(me);
   const foeTop = topStats(foe);
@@ -251,7 +268,7 @@ export function Matchmaking({
                   </button>
                   <button
                     onClick={() => {
-                      setPhase('found');
+                      enterPhase('found');
                       game?.uiCue('found');
                     }}
                     className="tk-btn"
@@ -261,7 +278,7 @@ export function Matchmaking({
                 </>
               )}
               {phase === 'found' && (
-                <button onClick={() => setPhase('lock')} className="tk-btn tk-btn-go">
+                <button onClick={() => enterPhase('lock')} className="tk-btn tk-btn-go">
                   MASUK RING · ENTER
                 </button>
               )}

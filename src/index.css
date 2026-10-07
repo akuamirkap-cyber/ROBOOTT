@@ -2061,10 +2061,9 @@ button.mw-ico:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
 }
 
 /* ====================================================================== THE TRANSITION (lobby → ring)
-   The VS screen's fist clash is the last beat of the lobby; this layer is what covers the cut from that shot into
-   the ring walk. It sits above EVERYTHING (the VS overlay included) and is pointer-transparent, so the fight can
-   start underneath it. Timings are per-kind: `--tr-tot` is the whole animation (cover + reveal), and every kind
-   reaches full cover before the bell at 1000 ms — the launch always happens under the cover, never in the open. */
+   The VS countdown hands over to the ring walk through this optional layer. It sits above EVERYTHING (the VS
+   overlay included) and is pointer-transparent, so the fight can start underneath it. Timings are per-kind:
+   `--tr-tot` is the whole animation (cover + reveal), and the selected transition runs independently of any punch. */
 .trans-root {
   position: absolute;
   inset: 0;
@@ -2072,15 +2071,14 @@ button.mw-ico:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
   overflow: hidden;
   pointer-events: none;
 }
-/* THE PAGE DIVE (zoom): the whole app — canvas and UI — scales up into the impact point, then is snapped back
-   under the cover, so the ring is revealed at its own scale. */
+/* THE PAGE DIVE (zoom): the app briefly scales into the center of the VS frame, then resets under the cover. */
 .app-dive {
   transform: scale(1.34);
   transform-origin: 50% 44%;
-  transition: transform 1000ms cubic-bezier(0.45, 0, 0.72, 0);
+  transition: transform 520ms cubic-bezier(0.45, 0, 0.72, 0);
 }
 
-/* ---- PUNCH ZOOM: the impact blooms, the frame dives, the dark closes ---- */
+/* ---- ZOOM MASUK: a restrained bloom, a brief frame dive, then the dark closes ---- */
 .tr-bloom {
   position: absolute;
   left: 50%;
@@ -2114,7 +2112,7 @@ button.mw-ico:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
   100% { opacity: 0; }
 }
 
-/* ---- FLASH PUTIH: the clash turns into light, and the light opens onto the ring ---- */
+/* ---- FLASH PUTIH: a quick screen flash opens onto the ring ---- */
 .tr-white {
   position: absolute;
   inset: 0;
@@ -2184,7 +2182,7 @@ button.mw-ico:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
   100% { left: 104%; opacity: 0; }
 }
 
-/* ---- GELOMBANG: the shock ring runs out of the fists and the frame goes black behind it ---- */
+/* ---- GELOMBANG: a centered ring expands as the frame fades to black ---- */
 .tr-shockring {
   position: absolute;
   left: 50%;

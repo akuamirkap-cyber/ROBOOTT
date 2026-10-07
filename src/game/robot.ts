@@ -52,6 +52,7 @@ export interface AnimState {
   dash: number; // 1 while a dash / sidestep / backstep is playing
   dashF: number; // dash direction in robot-local space (forward / lateral)
   dashL: number;
+  idleBounce?: number; // 0 locks a staged/showcase pose vertically; omitted keeps the normal standing bounce
   sprint?: number; // 0 = grounded boxing footwork, 1 = full sprint (when omitted, inferred from speed)
   headYaw?: number; // extra head turn (rad, + = his left): the ring walk plays to the stands
   tiltZ?: number; // airborne lay-over sideways (rad, + = over his left shoulder)
@@ -444,7 +445,7 @@ export class Robot {
 
     this.bounce += dt * Math.PI * 2 * (1.8 + sp01 * 0.5);
     const h = 0.5 + 0.5 * Math.sin(this.bounce);
-    const bounceAmt = 1 - this.gaitW;
+    const bounceAmt = clamp(a.idleBounce ?? 1, 0, 1) * (1 - this.gaitW);
     const bob = (h - 0.5) * 0.12 * bounceAmt;
 
     if (this.needSnap) {
@@ -471,8 +472,9 @@ export class Robot {
       return { sway: 0, roll: 0, yaw: 0, bob: 0, swing: 0, arm: 0, flight: 0, run: 0, depth: 0 };
     }
 
-    // ---- boxing dash: lead foot slides out first, rear foot snaps in behind it ----
+    // ---- boxing dash: a low, committed lead step followed by the rear foot ----
     const dashing = a.dash > 0.5 && this.ikW > 0.5;
+    const sideDash = Math.abs(a.dashL) > 0.65;
     if (dashing && !this.dashOn) {
       this.dashOn = true;
       this.dashT = 0;
@@ -568,7 +570,8 @@ export class Robot {
         f.u = 0;
         f.p0 = f.pitch; // swings blend out of the pitch the foot really has — no pop at step-off
         f.dur = i === this.dashLead ? 0.19 : 0.23;
-        f.lift = 0.08;
+        // Lateral double-tap dodges need enough toe clearance to read as a real shuffle, not a boot dragged over canvas.
+        f.lift = sideDash ? 0.16 : 0.08;
       }
     } else if (this.gait) {
       this.stepDist += spdRaw * dt;
@@ -768,7 +771,7 @@ export class Robot {
       tw.x = clamp(tw.x, -this.footLimit, this.footLimit);
       tw.z = clamp(tw.z, -this.footLimit, this.footLimit);
       // gait swings start and end with ~zero ground speed (no skidding on touch-down, no jerk at toe-off)
-      const e = f.shuffle ? 1 - Math.pow(1 - u, 2.2) : f.gaitStep ? lerp(u, sm(u), 0.95) : lerp(sm(u), 1 - Math.pow(1 - u, 2), 0.55);
+      const e = f.shuffle ? (sideDash ? sm(u) : 1 - Math.pow(1 - u, 2.2)) : f.gaitStep ? lerp(u, sm(u), 0.95) : lerp(sm(u), 1 - Math.pow(1 - u, 2), 0.55);
       f.curX = f.fx + (tw.x - f.fx) * e;
       f.curZ = f.fz + (tw.z - f.fz) * e;
       const w = Math.sin(Math.PI * u);

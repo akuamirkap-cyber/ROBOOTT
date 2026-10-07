@@ -5,6 +5,15 @@ import { buildProps } from './arenaProps';
 import { buildSheen } from './mirror';
 import { buildSpotRig } from './spotlights';
 import { markReflect, REFLECT_LIGHTS_LAYER } from './layers';
+import {
+  ROWS_PER_TIER,
+  SPECTATOR_SEAT_SPACING,
+  STAND_ROW_SPACING,
+  STAND_TIERS,
+  standRowHeight,
+  standRowInnerRadius,
+  standTierInnerRadius,
+} from './stadiumLayout';
 
 export interface Arena {
   update(t: number, dt: number, hype: number, focus?: THREE.Vector3): void;
@@ -242,6 +251,48 @@ function bannerTexture() {
   return toTex(c);
 }
 
+/** A legible, team-colour portal sign instead of a blank glowing slab. */
+function entranceSignTexture(hex: number) {
+  const W = 768;
+  const Hh = 96;
+  const { c, g } = canvas(W, Hh);
+  const color = `#${new THREE.Color(hex).getHexString()}`;
+  const bg = g.createLinearGradient(0, 0, W, Hh);
+  bg.addColorStop(0, '#080d1a');
+  bg.addColorStop(0.5, '#131a2a');
+  bg.addColorStop(1, '#080d1a');
+  g.fillStyle = bg;
+  g.fillRect(0, 0, W, Hh);
+  g.fillStyle = color;
+  g.fillRect(0, 0, W, 5);
+  g.fillRect(0, Hh - 5, W, 5);
+  g.strokeStyle = `${color}bb`;
+  g.lineWidth = 3;
+  g.strokeRect(8, 8, W - 16, Hh - 16);
+  g.fillStyle = '#edf4ff';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.font = font(48);
+  g.fillText('RING WALK', W / 2, 46);
+  g.fillStyle = color;
+  g.font = '700 15px Arial, sans-serif';
+  g.fillText('WORLD ROBOT CHAMPIONSHIP', W / 2, 76);
+  for (const [x, dir] of [[54, 1], [W - 54, -1]] as const) {
+    g.beginPath();
+    g.moveTo(x - dir * 14, 48);
+    g.lineTo(x + dir * 8, 34);
+    g.lineTo(x + dir * 8, 43);
+    g.lineTo(x + dir * 22, 43);
+    g.lineTo(x + dir * 22, 53);
+    g.lineTo(x + dir * 8, 53);
+    g.lineTo(x + dir * 8, 62);
+    g.closePath();
+    g.fillStyle = color;
+    g.fill();
+  }
+  return toTex(c, 4);
+}
+
 function wallTexture() {
   const W = 2048;
   const Hh = 256;
@@ -314,14 +365,13 @@ function floorDecalTexture() {
 
 export function buildArena(scene: THREE.Scene): Arena {
   scene.background = new THREE.Color(0x03050c);
-  // the haze is what makes the light show visible: a little more of it, and warmer, so every beam has something
-  // to bite on and the hall reads as a lit volume instead of a black void
-  scene.fog = new THREE.FogExp2(0x060a16, 0.0056);
+  // A restrained haze gives the beams shape without bleaching the far side of the arena.
+  scene.fog = new THREE.FogExp2(0x060a16, 0.0048);
 
-  // ---------- Balanced Stadium Broadcast & Championship Ring Lighting (Zero extra light overhead) ----------
-  scene.add(new THREE.AmbientLight(0x9fb4e4, 0.21)); // lifted with the rest of the rig: colour everywhere, not mud
-  scene.add(new THREE.HemisphereLight(0x8faeee, 0x241a2c, 0.46));
-  const key = new THREE.DirectionalLight(0xfff1dc, 2.45);
+  // ---------- BROADCAST RING LIGHTING: balanced face fill, rich colours, controlled highlights ----------
+  scene.add(new THREE.AmbientLight(0x9fb4e4, 0.14));
+  scene.add(new THREE.HemisphereLight(0x8faeee, 0x241a2c, 0.30));
+  const key = new THREE.DirectionalLight(0xfff1dc, 1.8);
   key.position.set(12, 40, 18);
   key.castShadow = true;
   key.shadow.mapSize.set(2048, 2048);
@@ -345,24 +395,20 @@ export function buildArena(scene: THREE.Scene): Arena {
     scene.add(s, s.target);
     return s;
   };
-  // THE RING KEY: one big warm followspot straight down onto the canvas — the ring blazes, the hall falls off
-  // into the dark, the way a title fight is lit for television. Brighter, wider and with a hotter falloff than
-  // before, so the canvas is a pool of real light and every scuff on it reads.
-  const ringKey = new THREE.SpotLight(0xfff3e2, 76, 92, 0.68, 0.5, 0.94);
+  // THE RING KEY: a warm overhead pool keeps the fighters readable while leaving colour and texture in the canvas.
+  const ringKey = new THREE.SpotLight(0xfff3e2, 32, 92, 0.68, 0.5, 0.94);
   ringKey.position.set(5, 33, 7);
   ringKey.target.position.set(0, 0, 0);
   scene.add(ringKey, ringKey.target);
-  // ...and a second, cool-white wash from the opposite corner: it lifts the ring apron and gives every fighter
-  // a crisp edge on BOTH shoulders, which is what makes a shot read as lit rather than merely bright
-  const ringFill = new THREE.SpotLight(0xdceaff, 30, 86, 0.86, 0.62, 1.0);
+  // A softer cool fill from the opposite corner separates the far-side armour without flattening its shadows.
+  const ringFill = new THREE.SpotLight(0xdceaff, 12, 86, 0.86, 0.62, 1.0);
   ringFill.position.set(-11, 30, -13);
   ringFill.target.position.set(0, 0, 0);
   scene.add(ringFill, ringFill.target);
-  // the coloured corner rims are the show now: crimson and steel-blue edge light hard on the fighters' shoulders,
-  // a white kicker from the side cutting them out of the dark — saturated enough that the colour READS
-  const rimRed = mkRim(0xff4a3c, -22, -28, 6.2);
-  const rimBlue = mkRim(0x4a92ff, 22, 28, 6.2);
-  const rimSide = mkRim(0xd8e4ff, 30, -12, 3.4);
+  // Subtle crimson/blue rims add shape around the armour; a soft white side kicker keeps silhouettes clear.
+  const rimRed = mkRim(0xff4a3c, -22, -28, 3.2);
+  const rimBlue = mkRim(0x4a92ff, 22, 28, 3.2);
+  const rimSide = mkRim(0xd8e4ff, 30, -12, 1.7);
 
   // ---------- floor ----------
   const floor = new THREE.Mesh(new THREE.CircleGeometry(150, 48), new THREE.MeshStandardMaterial({ color: 0x0b0e18, roughness: 0.28, metalness: 0.58 }));
@@ -688,12 +734,12 @@ export function buildArena(scene: THREE.Scene): Arena {
   }
 
   // ---------- stands: stepped rows of seats with aisles ----------
-  const tiers = 4;
-  const rowsPer = 3;
-  const rowW = 2.0;
-  const rIn = (k: number) => 32 + k * 6.5;
-  const rowInner = (k: number, r: number) => rIn(k) + r * rowW;
-  const rowH = (k: number, r: number) => 0.4 + (k * rowsPer + r + 1) * 0.85;
+  const tiers = STAND_TIERS;
+  const rowsPer = ROWS_PER_TIER;
+  const rowW = STAND_ROW_SPACING;
+  const rIn = standTierInnerRadius;
+  const rowInner = standRowInnerRadius;
+  const rowH = standRowHeight;
   // the LOWER bowl (tiers 0–1) is built in two arcs: the entrance tunnels (buildEntrance) pass through the gaps
   // between them. The UPPER bowl (tiers 2–3) is one full ring behind the tunnel housings.
   const LOWER = 2;
@@ -707,7 +753,7 @@ export function buildArena(scene: THREE.Scene): Arena {
   upper.unshift(lower[lower.length - 1].clone());
   upper.push(new THREE.Vector2(rowInner(tiers - 1, rowsPer - 1) + rowW, -1.4));
   const standsMat = new THREE.MeshStandardMaterial({ color: 0x151822, roughness: 0.9, metalness: 0.2, side: THREE.DoubleSide });
-  const STAND_GAP = 0.135; // half-angle of the tunnel cut (8.6 m wide at the mouth, r = 32)
+  const STAND_GAP = 0.17; // half-angle leaves a clean ~9.5 m opening for the widened ring-walk portals at r = 28
   for (const [a0, a1] of [
     [ENTRY_A[0] + STAND_GAP, ENTRY_A[1] - STAND_GAP],
     [ENTRY_A[1] + STAND_GAP, ENTRY_A[0] + Math.PI * 2 - STAND_GAP],
@@ -751,7 +797,7 @@ export function buildArena(scene: THREE.Scene): Arena {
       g.add(o);
       return o;
     };
-    const W = 6.6; // runway width
+    const W = 7.2; // a wider, balanced ring-walk with clear space for the entrance rails
     // flat runway from the gate to the foot of the wedge
     const Z0 = 23.5; // foot of the wedge
     const Z1 = 19.8; // the lip of the wedge — the take-off point, a clear 3.5 m short of the ring platform
@@ -777,6 +823,9 @@ export function buildArena(scene: THREE.Scene): Arena {
     // the team-colour carpet down the middle of the runway and up the wedge
     put(new THREE.BoxGeometry(W * 0.5, 0.02, flatL), carpet, 0, 0.15, flatZ);
     put(new THREE.BoxGeometry(W * 0.5, 0.02, SL), carpet, 0, rise / 2 + 0.02, SZ, slope, 0, 0);
+    // One continuous centre guide makes the widened path read as a clean, intentional entrance lane.
+    put(new THREE.BoxGeometry(0.08, 0.025, flatL), ledW, 0, 0.165, flatZ);
+    put(new THREE.BoxGeometry(0.08, 0.025, SL), ledW, 0, rise / 2 + 0.032, SZ, slope, 0, 0);
     // LED edge strips the whole way and a bright white lip on the wedge
     for (const sx of [-1, 1]) {
       put(new THREE.BoxGeometry(0.14, 0.18, flatL), led, sx * (W / 2 - 0.1), 0.18, flatZ);
@@ -826,7 +875,8 @@ export function buildArena(scene: THREE.Scene): Arena {
     }
     put(new THREE.BoxGeometry(W + 3.3, 1.5, 1.2), steel, 0, 10.1, 34.5);
     put(new THREE.BoxGeometry(W + 1.2, 0.16, 0.16), led, 0, 9.3, 34.0);
-    put(new THREE.PlaneGeometry(W + 0.6, 1.0), led, 0, 10.1, 33.85, 0, Math.PI, 0); // the sign face toward the ring
+    const sign = new THREE.MeshBasicMaterial({ map: entranceSignTexture(hex), side: THREE.DoubleSide, toneMapped: false });
+    put(new THREE.PlaneGeometry(W + 0.6, 1.0), sign, 0, 10.1, 33.85, 0, Math.PI, 0); // readable from the ring-walk approach
     for (const sx of [-1, 1]) {
       // floodlights on the pillars, aimed down the runway, with a soft visible beam
       const lx = sx * (W / 2 + 1.1);
@@ -855,7 +905,7 @@ export function buildArena(scene: THREE.Scene): Arena {
   for (let k = 0; k < tiers; k++) {
     for (let r = 0; r < rowsPer; r++) {
       const rs = rowInner(k, r) + rowW * 0.5;
-      const n = Math.floor((Math.PI * 2 * rs) / 2.0);
+      const n = Math.floor((Math.PI * 2 * rs) / SPECTATOR_SEAT_SPACING);
       const off = r * 0.5 + k * 0.3;
       for (let i = 0; i < n; i++) {
         const a = ((i + off) / n) * Math.PI * 2;
@@ -867,11 +917,11 @@ export function buildArena(scene: THREE.Scene): Arena {
         if (k < 2 && dEntry < 5.4) continue;
         const x = Math.cos(a) * rs;
         const z = Math.sin(a) * rs;
-        spots.push({ x, y: rowH(k, r), z, yaw: Math.atan2(-x, -z), empty: Math.random() < 0.15 });
+        spots.push({ x, y: rowH(k, r), z, yaw: Math.atan2(-x, -z), empty: Math.random() < 0.1 });
       }
     }
   }
-  const crowd = buildCrowd(scene, spots, 120);
+  const crowd = buildCrowd(scene, spots, 240);
   // corner pyro towers, TV cameras, stand lights, wall fins, flags and the OFFICIAL JUDGES' desks
   const props = buildProps(scene);
   const show = buildShow(scene, ENTRY_A);
@@ -928,7 +978,7 @@ export function buildArena(scene: THREE.Scene): Arena {
   }
   scene.add(lamps);
 
-  // the broadcast light rig: eight followspots on the inner truss + four moving heads on the outer one
+  // the broadcast light rig: eight inner followspots, eight colour movers and two blue main-event shafts
   const spotRig = buildSpotRig(scene);
 
   // ---------- jumbotron ----------
@@ -968,26 +1018,54 @@ export function buildArena(scene: THREE.Scene): Arena {
     sTex.needsUpdate = true;
   };
   setScreen('Atlas', 'Scrap-9', 'ROUND 1', '#4da3ff', '#ff6a4d');
+  // A proper suspended, eight-sided jumbo-tron: much larger than the old cube and visible around the full bowl.
+  // Every face uses the same live matchup canvas, so names / round state stay readable from any seating section.
   const jumbo = new THREE.Group();
-  jumbo.position.y = 27;
-  jumbo.scale.setScalar(2.2);
-  const hous = new THREE.Mesh(new THREE.BoxGeometry(6.2, 3.7, 6.2), new THREE.MeshStandardMaterial({ color: 0x15171d, metalness: 0.8, roughness: 0.5 }));
-  jumbo.add(hous);
-  const scrMat = new THREE.MeshBasicMaterial({ map: sTex, color: new THREE.Color(1.02, 1.02, 1.02) });
+  jumbo.position.y = 22;
+  const JUMBO_SIDES = 8;
+  const JUMBO_H = 5.4;
+  const JUMBO_FACE_R = 11.8;
+  const JUMBO_SHELL_R = JUMBO_FACE_R / Math.cos(Math.PI / JUMBO_SIDES);
+  const JUMBO_FACE_W = 2 * JUMBO_FACE_R * Math.tan(Math.PI / JUMBO_SIDES) * 0.96;
+  const tronFrame = new THREE.MeshStandardMaterial({ color: 0x11151e, metalness: 0.82, roughness: 0.38, side: THREE.DoubleSide });
+  const tronEdge = new THREE.MeshBasicMaterial({ color: new THREE.Color(0x4b9cff).multiplyScalar(0.9), toneMapped: false });
+  const shell = new THREE.Mesh(new THREE.CylinderGeometry(JUMBO_SHELL_R, JUMBO_SHELL_R, JUMBO_H, JUMBO_SIDES, 1, true), tronFrame);
+  jumbo.add(shell);
+  const scrMat = new THREE.MeshBasicMaterial({ map: sTex, color: new THREE.Color(1.02, 1.02, 1.02), side: THREE.DoubleSide, toneMapped: false });
+  for (let i = 0; i < JUMBO_SIDES; i++) {
+    const a = ((i + 0.5) / JUMBO_SIDES) * Math.PI * 2;
+    const radial = new THREE.Vector3(Math.sin(a), 0, Math.cos(a));
+    const backing = new THREE.Mesh(new THREE.BoxGeometry(JUMBO_FACE_W + 0.24, JUMBO_H + 0.16, 0.3), tronFrame);
+    backing.position.copy(radial).multiplyScalar(JUMBO_FACE_R);
+    backing.rotation.y = a;
+    jumbo.add(backing);
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(JUMBO_FACE_W, JUMBO_H - 0.2), scrMat);
+    screen.position.copy(radial).multiplyScalar(JUMBO_FACE_R + 0.17);
+    screen.rotation.y = a;
+    jumbo.add(screen);
+  }
+  // Heavy top/bottom rings and restrained blue edge lighting keep the drum crisp without washing out the screens.
+  for (const y of [-JUMBO_H / 2, JUMBO_H / 2]) {
+    const rim = new THREE.Mesh(new THREE.CylinderGeometry(JUMBO_SHELL_R + 0.22, JUMBO_SHELL_R + 0.22, 0.24, JUMBO_SIDES), tronFrame);
+    rim.position.y = y;
+    jumbo.add(rim);
+    const led = new THREE.Mesh(new THREE.CylinderGeometry(JUMBO_SHELL_R + 0.36, JUMBO_SHELL_R + 0.36, 0.07, JUMBO_SIDES), tronEdge);
+    led.position.y = y + (y > 0 ? -0.13 : 0.13);
+    jumbo.add(led);
+  }
+  // Four diagonal hangers tie the jumbo-tron back to the inner roof truss.
+  const hangerMat = new THREE.MeshStandardMaterial({ color: 0x373d49, metalness: 0.88, roughness: 0.34 });
   for (let i = 0; i < 4; i++) {
-    const p = new THREE.Mesh(new THREE.PlaneGeometry(5.9, 3.32), scrMat);
-    const a = (i * Math.PI) / 2;
-    p.position.set(Math.sin(a) * 3.12, 0, Math.cos(a) * 3.12);
-    p.rotation.y = a;
-    jumbo.add(p);
+    const a = Math.PI / 4 + i * Math.PI / 2;
+    const start = new THREE.Vector3(Math.sin(a) * (JUMBO_SHELL_R - 0.25), JUMBO_H / 2, Math.cos(a) * (JUMBO_SHELL_R - 0.25));
+    const end = new THREE.Vector3(Math.sin(a) * 17.3, 5.1, Math.cos(a) * 17.3);
+    const dir = end.clone().sub(start);
+    const hanger = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, dir.length(), 8), hangerMat);
+    hanger.position.copy(start).add(end).multiplyScalar(0.5);
+    hanger.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+    jumbo.add(hanger);
   }
   scene.add(jumbo);
-  for (const [x, z] of [[2.5, 2.5], [-2.5, 2.5], [2.5, -2.5], [-2.5, -2.5]]) {
-    const cab = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 6, 4), post);
-    cab.position.set(x * 0.7, 16.2, z * 0.7);
-    jumbo.add(cab);
-    cab.position.y = 4.4;
-  }
 
   let smoothHype = 0;
   let frame = 0;
@@ -1002,17 +1080,15 @@ export function buildArena(scene: THREE.Scene): Arena {
     updateRopes(dt);
     updateRing(dt);
     frame++;
-    crowd.update(t, smoothHype, frame & 1);
+    crowd.update(t, smoothHype, frame % 3, 3);
     const foc = focus ?? ORIGIN;
     props.update(t, dt, smoothHype, foc);
-    rimSide.intensity = 2.4 + smoothHype * 0.55;
-    // the ring key breathes: a slow tide under the fight, and a hard SURGE on every heavy impact (the whole ring
-    // blows out for a moment, the way a camera's auto-exposure reacts to a flash bulb)
-    ringKey.intensity = 64 + smoothHype * 10 + Math.sin(t * 0.7) * 1.2 + kick * kick * 38;
-    ringFill.intensity = 22 + smoothHype * 5;
+    rimSide.intensity = 1.25 + smoothHype * 0.3;
+    // Keep the center bright enough to read, but cap impact lifts before the whites flatten the canvas and steel.
+    ringKey.intensity = 29 + smoothHype * 4 + Math.sin(t * 0.7) * 0.5 + kick * kick * 12;
+    ringFill.intensity = 11 + smoothHype * 2;
     ledTex.offset.x = (ledTex.offset.x + dt * 0.012) % 1;
     spotRig.update(t, dt, smoothHype, foc);
-    jumbo.rotation.y = t * 0.12;
     show.update(t, dt, smoothHype);
     // the apron LEDs breathe with the crowd
     const ap = 0.7 + Math.max(0, Math.sin(t * 2.6)) * (0.12 + smoothHype * 0.2);

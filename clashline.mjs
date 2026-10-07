@@ -3,12 +3,12 @@
 // usage: node clashline.mjs [tEnd] [step]
 import * as THREE from 'three';
 import { Robot } from './.__robot.mjs';
-import { vsClashState } from './.__game.mjs';
+import { VS_CLASH_SEP, vsClashState } from './.__game.mjs';
 
 const D = 1 / 60;
 const STYLE = { variant: 'atom', main: 0x8a8f98, secondary: 0x3a3f47, accent: 0x1e9bff, glow: 0x63e0ff };
-const HERO_X = -2.75;
-const FOE_X = 2.75;
+const HERO_X = -VS_CLASH_SEP;
+const FOE_X = VS_CLASH_SEP;
 const YAW = 0.42;
 
 function gloveCenter(fistObj) {
@@ -59,9 +59,9 @@ for (let t = 0; t <= end; t += D) {
     next += stepOut;
     hero.root.updateWorldMatrix(true, true);
     foe.root.updateWorldMatrix(true, true);
-    const h = gloveCenter(hero.fists[1]);
-    const f = gloveCenter(foe.fists[1]);
+    const h = gloveCenter(hero.fists[ch.arm]);
+    const f = gloveCenter(foe.fists[cf.arm]);
     const gap = h.distanceTo(f);
-    console.log(`t=${t.toFixed(3)}  hero ${h.toArray().map((v) => v.toFixed(2)).join(',')}  foe ${f.toArray().map((v) => v.toFixed(2)).join(',')}  gap ${gap.toFixed(2)}  fists y/z: ${h.y.toFixed(2)},${h.z.toFixed(2)} / ${f.y.toFixed(2)},${f.z.toFixed(2)}`);
+    console.log(`t=${t.toFixed(3)}  hero hand ${ch.arm} ${h.toArray().map((v) => v.toFixed(2)).join(',')}  foe hand ${cf.arm} ${f.toArray().map((v) => v.toFixed(2)).join(',')}  gap ${gap.toFixed(2)}  y/z: ${h.y.toFixed(2)},${h.z.toFixed(2)} / ${f.y.toFixed(2)},${f.z.toFixed(2)}`);
   }
 }

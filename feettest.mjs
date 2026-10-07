@@ -35,10 +35,12 @@ class Rig {
     this.a = mk();
     this.t = 0;
     this.gaitSteps = 0;
+    this.shuffleSteps = 0;
     this.punchSteps = 0;
     this.acc = { x: 0, y: 0 };
     this.prevV = { f: 0, l: 0 };
     this.wasStepping = [false, false];
+    this.wasShuffle = [false, false];
     this.run(1.2); // settle into the boxing stance
   }
   get S() {
@@ -76,7 +78,9 @@ class Rig {
         if (f.gaitStep) this.gaitSteps++;
         if (f.punchStep) this.punchSteps++;
       }
+      if (f.shuffle && !this.wasShuffle[i]) this.shuffleSteps++;
       this.wasStepping[i] = f.stepping;
+      this.wasShuffle[i] = f.shuffle;
     }
   }
   run(seconds, vf = 0, vl = 0, extra) {
@@ -143,6 +147,42 @@ console.log('=== 3. A MEDIUM TAP LANDS BACK IN THE STANCE ===');
   r.move(0.22, 4.9, 'side');
   const off = Math.max(...r.off());
   check('tap 220ms: lands in the stance', off < 0.62, `steps ${r.gaitSteps}, worst off-stance ${off.toFixed(3)} local`);
+}
+
+console.log('=== 3b. A DOUBLE-TAP SIDESTEP LIFTS AND REPLANTS BOTH FEET ===');
+{
+  const dodgeDur = 0.32;
+  const fwScale = 1 + (3 - 1) * 0.05; // default 3× footwork adds only 10% to a lateral shuffle
+  const rageScales = [1, 1.18];
+  let maxLift = 0;
+  let closest = Infinity;
+  let maxIk = 0;
+  const travels = [];
+  for (const rageScale of rageScales) {
+    const r = new Rig();
+    const dodgeSpeed = 15.2 * fwScale * rageScale;
+    let speed = 0;
+    for (let i = 0; i < 90; i++) {
+      const t = i * D;
+      const active = t < dodgeDur;
+      if (active) {
+        const u = Math.min(1, t / dodgeDur);
+        const push = u < 0.14 ? 0.38 + 0.62 * (u / 0.14) : 1;
+        const glide = u < 0.14 ? 1 : Math.pow(Math.cos(((u - 0.14) / 0.86) * Math.PI * 0.5), 1.12);
+        speed = dodgeSpeed * push * glide;
+      } else speed = Math.max(0, speed - 48 * D);
+      r.frame(0, speed, { dash: active ? 1 : 0, dashF: 0, dashL: 1 });
+      for (const f of r.feet) if (f.shuffle) maxLift = Math.max(maxLift, Math.sin(Math.PI * f.u) * f.lift);
+      const gap = Math.hypot(r.loc(0).x - r.loc(1).x, r.loc(0).z - r.loc(1).z);
+      closest = Math.min(closest, gap);
+      maxIk = Math.max(maxIk, ...r.robot.ikErr);
+    }
+    travels.push(Math.abs(r.robot.root.position.x / r.S));
+    check(`${rageScale === 1 ? 'default' : 'rage'} 3× footwork stays controlled, not a long skate`, travels.at(-1) > 2.2 && travels.at(-1) < 4.5, `travel ${travels.at(-1).toFixed(2)} local`);
+    check(`${rageScale === 1 ? 'default' : 'rage'} sidestep gets two shuffle steps`, r.shuffleSteps === 2, `shuffle steps ${r.shuffleSteps}`);
+  }
+  check('the side-step visibly clears the canvas', maxLift >= 0.14, `peak toe clearance ${maxLift.toFixed(3)} local`);
+  check('rapid lateral footwork keeps the stance readable', closest > 0.55 && maxIk < 0.12, `closest feet ${closest.toFixed(3)} · worst IK error ${maxIk.toFixed(3)}`);
 }
 
 console.log('=== 4. EVERY PUNCH RE-PLANTS THE PUNCHING LEG ===');

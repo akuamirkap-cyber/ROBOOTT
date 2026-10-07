@@ -285,7 +285,7 @@ export function BrightnessPicker({ value, onPick }: { value: number; onPick: (b:
 }
 
 /**
- * HOW THE LOBBY HANDS OVER TO THE RING. Every kind is dressed over the same beat — the fist clash on the VS screen,
+ * HOW THE LOBBY HANDS OVER TO THE RING. Every kind is dressed over the short VS countdown —
  * then the cover, then the bell under it — so this only changes the look, never when the fight starts. "COBA" plays
  * the picked one over the lobby right now, so you can choose one without having to start a match.
  */

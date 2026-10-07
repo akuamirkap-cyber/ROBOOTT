@@ -105,7 +105,6 @@ export function Bracket({
     <div className="vs-root bk-root pointer-events-auto absolute inset-0 z-40 flex flex-col text-white">
       <div className="bk-bg" />
       <div className="vs-scan" />
-      <div className="mm-vignette" />
 
       {/* title strip */}
       <div className="relative z-10 flex items-end justify-between px-8 pt-5">

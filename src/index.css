@@ -89,12 +89,7 @@ body,
   opacity: 0;
   background: radial-gradient(ellipse at center, rgba(255, 40, 20, 0) 35%, rgba(255, 30, 20, 0.85) 100%);
 }
-.vignette {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, 0.65) 100%);
-}
+
 
 /* ====================================================================== shared shapes & surfaces */
 .cut { clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px)); }
@@ -644,12 +639,7 @@ body,
   from { background-position: 0 0, 0 0; }
   to { background-position: 0 44px, 44px 0; }
 }
-.mm-vignette {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  box-shadow: inset 0 0 180px rgba(0, 0, 0, 0.85);
-}
+
 .mm-breathe { animation: mmBreathe 1.6s ease-in-out infinite; }
 @keyframes mmBreathe {
   0%, 100% { opacity: 0.75; letter-spacing: 0.14em; }
@@ -1788,7 +1778,6 @@ button.aaa-pill:hover { background: rgba(255, 255, 255, 0.13); }
    VS SCREEN — TEKKEN 8 style, over the live 3D stage (names · chrome VS · scouting panels · stage card)
    =================================================================== */
 .tk-root { background: transparent; font-family: var(--font-tech); font-weight: 600; }
-.tk-vignette { position: absolute; inset: 0; background: radial-gradient(90% 70% at 50% 45%, transparent 45%, rgba(0, 0, 0, 0.55) 100%), linear-gradient(180deg, rgba(0, 0, 0, 0.5) 0%, transparent 18%, transparent 68%, rgba(0, 0, 0, 0.78) 100%); pointer-events: none; }
 .tk-flash { position: absolute; inset: 0; background: #fff; animation: tkFlash 0.5s ease-out forwards; pointer-events: none; z-index: 5; }
 @keyframes tkFlash { from { opacity: 0.85; } to { opacity: 0; } }
 .tk-top { position: absolute; left: 2.4%; top: 2.4%; display: flex; flex-direction: column; gap: 2px; }
@@ -1978,9 +1967,9 @@ button.mw-ico:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
 .tk-lockwash { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(60% 60% at 50% 50%, transparent 40%, rgba(0, 0, 0, 0.55) 100%); animation: tkFade 0.5s ease-out both; z-index: 2; }
 @keyframes tkFade { from { opacity: 0; } to { opacity: 1; } }
 .tk-countdown { position: absolute; left: 50%; top: 44%; transform: translate(-50%, -50%); width: 26vmin; height: 26vmin; display: grid; place-items: center; z-index: 5; pointer-events: none; }
-.tk-count-ring { position: absolute; inset: 0; border-radius: 50%; border: 0.6vmin solid rgba(255, 255, 255, 0.18); border-top-color: #ffd34a; box-shadow: 0 0 30px rgba(255, 211, 74, 0.35), inset 0 0 30px rgba(0, 0, 0, 0.6); animation: tkSpinSnap 1s cubic-bezier(0.2, 0.9, 0.2, 1) both; background: rgba(0, 0, 0, 0.45); }
+.tk-count-ring { position: absolute; inset: 0; border-radius: 50%; border: 0.6vmin solid rgba(255, 255, 255, 0.18); border-top-color: #ffd34a; box-shadow: 0 0 30px rgba(255, 211, 74, 0.35), inset 0 0 30px rgba(0, 0, 0, 0.6); animation: tkSpinSnap 0.68s cubic-bezier(0.2, 0.9, 0.2, 1) both; background: rgba(0, 0, 0, 0.45); }
 @keyframes tkSpinSnap { from { transform: rotate(-300deg) scale(1.25); opacity: 0; } 30% { opacity: 1; } to { transform: rotate(0) scale(1); opacity: 1; } }
-.tk-count { position: relative; font-family: var(--font-display); font-weight: 900; font-style: italic; font-size: 15vmin; line-height: 1; color: #fff; text-shadow: 0 0 30px rgba(255, 211, 74, 0.8), 0 4px 0 #000; animation: tkCount 1s ease-out both; }
+.tk-count { position: relative; font-family: var(--font-display); font-weight: 900; font-style: italic; font-size: 15vmin; line-height: 1; color: #fff; text-shadow: 0 0 30px rgba(255, 211, 74, 0.8), 0 4px 0 #000; animation: tkCount 0.68s ease-out both; }
 .tk-count-k { position: absolute; bottom: -4vmin; font-size: clamp(10px, 1.5vmin, 16px); letter-spacing: 0.4em; color: #ffd34a; white-space: nowrap; }
 .tk-lock .tk-name-t { opacity: 0.9; }
 
